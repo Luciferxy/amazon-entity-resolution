@@ -117,8 +117,8 @@ def main(n_s1=150_000, use_nn=False, force_gpu=True):
     if force_gpu and "ER_BACKEND" not in os.environ:
         if torch.cuda.is_available():
             os.environ["ER_BACKEND"] = "gpu"
-            os.environ["ER_GPU_MODE"] = "exact"
-            print(f"[Device] Using NVIDIA GPU: {torch.cuda.get_device_name(0)}")
+            os.environ["ER_GPU_MODE"] = os.environ.get("ER_GPU_MODE", "svd")
+            print(f"[Device] Using NVIDIA GPU: {torch.cuda.get_device_name(0)} (mode: {os.environ['ER_GPU_MODE']})")
         else:
             print("[Device] No CUDA device detected; falling back to CPU.")
 

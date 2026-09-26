@@ -5,7 +5,7 @@ try:
     import sparse_dot_topn
 except ImportError:
     pass
-from config import CACHE
+from config import CACHE, K
 
 CH = {"nosp": dict(analyzer="char", ngram_range=(3, 3)),
       "addr": dict(analyzer="char_wb", ngram_range=(3, 3))}
@@ -18,7 +18,7 @@ def _backend():
     except ImportError:
         return "cpu"
 BACKEND = _backend()
-GPU_MODE = os.environ.get("ER_GPU_MODE", "exact")   # exact | svd
+GPU_MODE = os.environ.get("ER_GPU_MODE", "svd")   # svd (fast, ~3 min) | exact (~3 hours)
 
 def _vec(kw):
     return TfidfVectorizer(max_df=0.3, sublinear_tf=True, dtype=np.float32, **kw)
@@ -95,35 +95,43 @@ def _proj(svd, X):
     n = np.linalg.norm(E, axis=1, keepdims=True); n[n == 0] = 1
     return E / n
 
-def _topk_gpu_svd(s1_text, q_text, k, kw, dim=256, k_ann=10, fit_n=300_000,
-                  qchunk=100_000, bs=1024, thr=0.1, device="cuda:0"):
+def _topk_gpu_svd(s1_text, q_text, k, kw, dim=256, fit_n=300_000,
+                  qchunk=100_000, bs=2048, thr=0.1, device="cuda:0"):
     import torch
     from sklearn.decomposition import TruncatedSVD
     dev = torch.device(device)
     vec = _vec(kw); X = vec.fit_transform(s1_text)
     rng = np.random.default_rng(0)
     samp = X[rng.choice(X.shape[0], min(fit_n, X.shape[0]), replace=False)]
-    svd = TruncatedSVD(dim, algorithm="randomized", n_iter=4, random_state=0).fit(samp)
+    svd = TruncatedSVD(dim, algorithm="randomized", n_iter=3, random_state=0).fit(samp)
     S = torch.from_numpy(_proj(svd, X)).to(dev, torch.float16)
-    ka = min(k_ann, X.shape[0]); kk = min(k, ka)
+    kk = min(k, X.shape[0])
     R, C, V = [], [], []
     for st in range(0, len(q_text), qchunk):
+        tc = time.time()
         Qx = vec.transform(q_text[st:st + qchunk]); n = Qx.shape[0]
         Q = torch.from_numpy(_proj(svd, Qx)).to(dev, torch.float16)
-        I = np.empty((n, ka), dtype=np.int64)
+        n_hits_before = sum(len(x) for x in R)
         for b in range(0, n, bs):
-            I[b:b + bs] = (Q[b:b + bs] @ S.T).topk(ka, dim=1).indices.cpu().numpy()
-        ex = _rowdot(Qx[np.repeat(np.arange(n), ka)], X[I.ravel()]).reshape(n, ka)
-        order = np.argsort(-ex, axis=1)[:, :kk]
-        cols = np.take_along_axis(I, order, 1).ravel()
-        vals = np.take_along_axis(ex, order, 1).ravel()
-        rows = np.repeat(np.arange(n) + st, kk)
-        keep = vals >= thr
-        R.append(rows[keep]); C.append(cols[keep]); V.append(vals[keep])
+            sub_q = Q[b:b + bs]
+            sims = sub_q @ S.T
+            v, idx = sims.topk(kk, dim=1)
+            v_np, idx_np = v.cpu().numpy(), idx.cpu().numpy()
+            rows_b = np.repeat(np.arange(st + b, st + b + sub_q.shape[0]), kk)
+            cols_b = idx_np.ravel()
+            vals_b = v_np.ravel()
+            keep_b = vals_b >= thr
+            R.append(rows_b[keep_b]); C.append(cols_b[keep_b]); V.append(vals_b[keep_b])
+            del sims, v, idx
         del Q
+        if len(q_text) > qchunk:
+            n_chunk_hits = sum(len(x) for x in R) - n_hits_before
+            print(f"      [{device} svd] chunk [{st}:{min(st+qchunk, len(q_text))}/{len(q_text)}]: {n_chunk_hits:,} hits in {time.time()-tc:.1f}s", flush=True)
     del S
     with torch.cuda.device(dev):
         torch.cuda.empty_cache()
+    if not R:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
     return np.concatenate(R), np.concatenate(C), np.concatenate(V)
 
 def _pick_topk():
@@ -131,7 +139,7 @@ def _pick_topk():
     return (_topk_gpu_exact, "gpu-exact") if GPU_MODE == "exact" else (_topk_gpu_svd, "gpu-svd")
 
 # ---------- blocking ----------
-def block(s1, pool, k=3, cache=None):
+def block(s1, pool, k=K, cache=None):
     """Pool-side blocking: every (pool record, S1) pair in either channel's top-k, with scores."""
     topk, tag = _pick_topk()
     items = list(CH.items())
