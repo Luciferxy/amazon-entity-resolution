@@ -45,8 +45,10 @@ def _topk_cpu(s1_text, q_text, k, kw, chunk=50_000, thr=0.1):
     return np.concatenate(R), np.concatenate(C), np.concatenate(V)
 
 # ---------- GPU: exact TF-IDF cosine (CSR S1 @ dense query batch) ----------
-def _topk_gpu_exact(s1_text, q_text, k, kw, bs=512, qchunk=50_000, thr=0.1):
+def _topk_gpu_exact(s1_text, q_text, k, kw, bs=None, qchunk=50_000, thr=0.1):
     import torch
+    if bs is None:
+        bs = int(os.environ.get("ER_GPU_BS", 2048))
     vec = _vec(kw); X = vec.fit_transform(s1_text).tocsr()          # (n_s1, V), L2-normalized
     Xt = torch.sparse_csr_tensor(torch.from_numpy(X.indptr.astype(np.int32)),
                                  torch.from_numpy(X.indices.astype(np.int32)),
@@ -54,7 +56,9 @@ def _topk_gpu_exact(s1_text, q_text, k, kw, bs=512, qchunk=50_000, thr=0.1):
                                  size=X.shape, device="cuda")
     kk = min(k, X.shape[0]); R, C, V = [], [], []
     for st in range(0, len(q_text), qchunk):
+        tc = time.time()
         Qx = vec.transform(q_text[st:st + qchunk]).tocsr()
+        n_hits_before = sum(len(x) for x in R)
         for b in range(0, Qx.shape[0], bs):
             Qb = torch.from_numpy(np.ascontiguousarray(Qx[b:b + bs].toarray().T)).to("cuda")  # (V, bs)
             v, i = (Xt @ Qb).topk(kk, dim=0)                                                   # (kk, bs)
@@ -63,7 +67,12 @@ def _topk_gpu_exact(s1_text, q_text, k, kw, bs=512, qchunk=50_000, thr=0.1):
             keep = v >= thr
             R.append(rows[keep]); C.append(i[keep]); V.append(v[keep])
             del Qb
+        if len(q_text) > qchunk:
+            n_chunk_hits = sum(len(x) for x in R) - n_hits_before
+            print(f"      [GPU bs={bs}] chunk [{st}:{min(st+qchunk, len(q_text))}/{len(q_text)}]: {n_chunk_hits:,} hits in {time.time()-tc:.1f}s", flush=True)
     del Xt; torch.cuda.empty_cache()
+    if not R:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
     return np.concatenate(R), np.concatenate(C), np.concatenate(V)
 
 # ---------- GPU: SVD approximate + exact re-rank (fallback) ----------
