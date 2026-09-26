@@ -30,7 +30,7 @@ def _rowdot(A, B):                      # row-wise cosine of L2-normalized spars
     return np.asarray(A.multiply(B).sum(axis=1)).ravel()
 
 # ---------- CPU: exact sparse top-k ----------
-def _topk_cpu(s1_text, q_text, k, kw, chunk=50_000, thr=0.1):
+def _topk_cpu(s1_text, q_text, k, kw, chunk=50_000, thr=0.1, **kwargs):
     from sparse_dot_topn import sp_matmul_topn
     vec = _vec(kw); B = vec.fit_transform(s1_text).T.tocsr()
     R, C, V = [], [], []
@@ -45,9 +45,11 @@ def _topk_cpu(s1_text, q_text, k, kw, chunk=50_000, thr=0.1):
     return np.concatenate(R), np.concatenate(C), np.concatenate(V)
 
 # ---------- GPU: exact TF-IDF cosine (CSR S1 @ dense query batch) ----------
-def _topk_gpu_exact(s1_text, q_text, k, kw, bs=None, qchunk=50_000, thr=0.1):
+def _topk_gpu_exact(s1_text, q_text, k, kw, bs=None, qchunk=50_000, thr=0.1, device="cuda:0"):
     import torch
-    torch.cuda.empty_cache()
+    dev = torch.device(device)
+    with torch.cuda.device(dev):
+        torch.cuda.empty_cache()
     vec = _vec(kw); X = vec.fit_transform(s1_text).tocsr()          # (n_s1, V), L2-normalized
     n_s1 = X.shape[0]
 
@@ -63,14 +65,14 @@ def _topk_gpu_exact(s1_text, q_text, k, kw, bs=None, qchunk=50_000, thr=0.1):
     Xt = torch.sparse_csr_tensor(torch.from_numpy(X.indptr.astype(np.int32)),
                                  torch.from_numpy(X.indices.astype(np.int32)),
                                  torch.from_numpy(X.data.astype(np.float32)),
-                                 size=X.shape, device="cuda")
+                                 size=X.shape, device=dev)
     kk = min(k, X.shape[0]); R, C, V = [], [], []
     for st in range(0, len(q_text), qchunk):
         tc = time.time()
         Qx = vec.transform(q_text[st:st + qchunk]).tocsr()
         n_hits_before = sum(len(x) for x in R)
         for b in range(0, Qx.shape[0], bs):
-            Qb = torch.from_numpy(np.ascontiguousarray(Qx[b:b + bs].toarray().T)).to("cuda")  # (V, bs)
+            Qb = torch.from_numpy(np.ascontiguousarray(Qx[b:b + bs].toarray().T)).to(dev)  # (V, bs)
             v, i = (Xt @ Qb).topk(kk, dim=0)                                                   # (kk, bs)
             v, i = v.T.cpu().numpy().ravel(), i.T.cpu().numpy().ravel()
             rows = np.repeat(np.arange(st + b, st + b + Qb.shape[1]), kk)
@@ -79,8 +81,10 @@ def _topk_gpu_exact(s1_text, q_text, k, kw, bs=None, qchunk=50_000, thr=0.1):
             del Qb
         if len(q_text) > qchunk:
             n_chunk_hits = sum(len(x) for x in R) - n_hits_before
-            print(f"      [GPU bs={bs}] chunk [{st}:{min(st+qchunk, len(q_text))}/{len(q_text)}]: {n_chunk_hits:,} hits in {time.time()-tc:.1f}s", flush=True)
-    del Xt; torch.cuda.empty_cache()
+            print(f"      [{device} bs={bs}] chunk [{st}:{min(st+qchunk, len(q_text))}/{len(q_text)}]: {n_chunk_hits:,} hits in {time.time()-tc:.1f}s", flush=True)
+    del Xt
+    with torch.cuda.device(dev):
+        torch.cuda.empty_cache()
     if not R:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
     return np.concatenate(R), np.concatenate(C), np.concatenate(V)
@@ -92,19 +96,20 @@ def _proj(svd, X):
     return E / n
 
 def _topk_gpu_svd(s1_text, q_text, k, kw, dim=256, k_ann=10, fit_n=300_000,
-                  qchunk=100_000, bs=1024, thr=0.1):
+                  qchunk=100_000, bs=1024, thr=0.1, device="cuda:0"):
     import torch
     from sklearn.decomposition import TruncatedSVD
+    dev = torch.device(device)
     vec = _vec(kw); X = vec.fit_transform(s1_text)
     rng = np.random.default_rng(0)
     samp = X[rng.choice(X.shape[0], min(fit_n, X.shape[0]), replace=False)]
     svd = TruncatedSVD(dim, algorithm="randomized", n_iter=4, random_state=0).fit(samp)
-    S = torch.from_numpy(_proj(svd, X)).to("cuda", torch.float16)
+    S = torch.from_numpy(_proj(svd, X)).to(dev, torch.float16)
     ka = min(k_ann, X.shape[0]); kk = min(k, ka)
     R, C, V = [], [], []
     for st in range(0, len(q_text), qchunk):
         Qx = vec.transform(q_text[st:st + qchunk]); n = Qx.shape[0]
-        Q = torch.from_numpy(_proj(svd, Qx)).to("cuda", torch.float16)
+        Q = torch.from_numpy(_proj(svd, Qx)).to(dev, torch.float16)
         I = np.empty((n, ka), dtype=np.int64)
         for b in range(0, n, bs):
             I[b:b + bs] = (Q[b:b + bs] @ S.T).topk(ka, dim=1).indices.cpu().numpy()
@@ -116,7 +121,9 @@ def _topk_gpu_svd(s1_text, q_text, k, kw, dim=256, k_ann=10, fit_n=300_000,
         keep = vals >= thr
         R.append(rows[keep]); C.append(cols[keep]); V.append(vals[keep])
         del Q
-    del S; torch.cuda.empty_cache()
+    del S
+    with torch.cuda.device(dev):
+        torch.cuda.empty_cache()
     return np.concatenate(R), np.concatenate(C), np.concatenate(V)
 
 def _pick_topk():
@@ -127,6 +134,15 @@ def _pick_topk():
 def block(s1, pool, k=3, cache=None):
     """Pool-side blocking: every (pool record, S1) pair in either channel's top-k, with scores."""
     topk, tag = _pick_topk()
+    items = list(CH.items())
+    n_gpus = 0
+    if BACKEND == "gpu":
+        try:
+            import torch
+            n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        except ImportError:
+            n_gpus = 0
+
     out = []
     for c in pd.unique(pool["country"].to_numpy(dtype=object)):
         f = CACHE / f"{cache}_{re.sub(r'[^a-z0-9]+', '_', str(c))}.parquet" if cache else None
@@ -136,12 +152,27 @@ def block(s1, pool, k=3, cache=None):
         q = pool[pool["country"] == c]
         idx = s1[s1["country"] == c]
         if len(idx) == 0: idx = s1                              # unseen-country fallback
-        parts = []
-        for col, kw in CH.items():
-            tc = time.time()
-            r, s, v = topk(_txt(idx[col]), _txt(q[col]), k, kw)
-            parts.append(pd.DataFrame({"q": r, "s": s, col: v}))
-            print(f"    {c}/{col}: {len(r):,} hits in {time.time()-tc:.0f}s", flush=True)
+
+        if n_gpus >= 2 and BACKEND == "gpu":
+            from concurrent.futures import ThreadPoolExecutor
+            def _run_channel(ch_idx):
+                col, kw = items[ch_idx]
+                dev = f"cuda:{ch_idx}"
+                tc = time.time()
+                r, s, v = topk(_txt(idx[col]), _txt(q[col]), k, kw, device=dev)
+                print(f"    {c}/{col} on {dev}: {len(r):,} hits in {time.time()-tc:.0f}s", flush=True)
+                return col, pd.DataFrame({"q": r, "s": s, col: v})
+
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                results = dict(ex.map(_run_channel, range(2)))
+            parts = [results["nosp"], results["addr"]]
+        else:
+            parts = []
+            for col, kw in CH.items():
+                tc = time.time()
+                r, s, v = topk(_txt(idx[col]), _txt(q[col]), k, kw)
+                parts.append(pd.DataFrame({"q": r, "s": s, col: v}))
+                print(f"    {c}/{col}: {len(r):,} hits in {time.time()-tc:.0f}s", flush=True)
         m = parts[0].merge(parts[1], on=["q", "s"], how="outer").fillna(0.0)
         m["score"] = m[["nosp", "addr"]].max(axis=1) + 0.5 * m[["nosp", "addr"]].min(axis=1)
         m = m.sort_values(["q", "score"], ascending=[True, False]).reset_index(drop=True)
