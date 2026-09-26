@@ -47,9 +47,19 @@ def _topk_cpu(s1_text, q_text, k, kw, chunk=50_000, thr=0.1):
 # ---------- GPU: exact TF-IDF cosine (CSR S1 @ dense query batch) ----------
 def _topk_gpu_exact(s1_text, q_text, k, kw, bs=None, qchunk=50_000, thr=0.1):
     import torch
-    if bs is None:
-        bs = int(os.environ.get("ER_GPU_BS", 2048))
+    torch.cuda.empty_cache()
     vec = _vec(kw); X = vec.fit_transform(s1_text).tocsr()          # (n_s1, V), L2-normalized
+    n_s1 = X.shape[0]
+
+    # Adaptive safe batch size: ensure intermediate (n_s1 x bs) dense buffer is <= 2.5 GiB
+    if bs is None:
+        user_bs = os.environ.get("ER_GPU_BS")
+        if user_bs:
+            bs = int(user_bs)
+        else:
+            safe_bs = int(2.5 * (1024 ** 3) / (n_s1 * 4 + 1))
+            bs = min(1024, max(128, (safe_bs // 64) * 64))
+
     Xt = torch.sparse_csr_tensor(torch.from_numpy(X.indptr.astype(np.int32)),
                                  torch.from_numpy(X.indices.astype(np.int32)),
                                  torch.from_numpy(X.data.astype(np.float32)),
