@@ -1,14 +1,13 @@
 # 🦅 Kaggle GPU Run Guide: Business Entity Resolution
 
-This guide walks you through running the Entity Resolution pipeline on **Kaggle Notebooks** with **30 Free GPU Hours per week** (Dual NVIDIA T4 GPUs).
+This guide walks through the Kaggle workflow. Candidate generation combines name and address character and word n-grams; LightGBM then scores the retrieved pairs.
 
 ---
 
 ## 🎯 Why Kaggle?
-1. **No "Compute Units" Limit:** Kaggle provides 30 hours of free GPU time every single week.
-2. **Dual NVIDIA T4 GPUs:** 16 GB VRAM per GPU.
-3. **High-Speed Storage:** 30 GB scratch disk at `/kaggle/working`.
-4. **1-Click Download:** Outputs generated in `/kaggle/working` appear directly in the **Output** tab on the right panel for immediate download.
+1. **GPU support:** The notebook uses both T4 GPUs when Kaggle provides two; a single GPU is supported.
+2. **High-Speed Storage:** Intermediate files use the Kaggle workspace.
+3. **Downloadable outputs:** Copy the final TSV files and archive to `/kaggle/working`.
 
 ---
 
@@ -45,6 +44,8 @@ In Kaggle's top menu:
 2. Upload [`kaggle_runbook.ipynb`](file:///Users/souravsuman/Documents/ChatGPT/Amazon/student_resource/kaggle_runbook.ipynb) from your computer (or select GitHub import).
 3. Click **Run All**!
 
+The notebook's first cell clones the GitHub repository. For these local improvements to be used, that clone must contain the updated `src/` files; push the changes to the repo before running, or upload the updated source files to Kaggle and use that copy.
+
 #### Option B: In a Blank Notebook Cell
 Simply paste this in the first cell and run:
 ```python
@@ -58,13 +59,14 @@ Simply paste this in the first cell and run:
 # 3. Configure GPU & Run
 import os
 os.environ['ER_BACKEND'] = 'gpu'
-os.environ['ER_GPU_MODE'] = 'exact'
-os.environ['ER_K'] = '5'
+os.environ['ER_GPU_MODE'] = 'svd'
+os.environ['ER_K'] = '8'
 
-# 4. Preprocess & Train
+# 4. Preprocess, inspect candidate recall, and train
 !python src/prep.py train
 !python src/prep.py test
-!python src/train_lightning.py 100000
+!python src/eval_block.py
+!python src/train_lightning.py 300000
 
 # 5. Predict Test Set
 !python src/run_test.py

@@ -1,15 +1,15 @@
 import time, numpy as np, pandas as pd
-from config import K, PRUNE, BLOCK_COLS, load, load_pool, read_gt, gt_pairs
+from config import K, PRUNE, BLOCK_COLS, load, load_pool, read_gt, gt_pairs, validation_s1_ids
 from block import block, prune, BACKEND
 
-EXTRA = ["business_name", "business_address"]
+EXTRA = ["business_name", "business_address", "core"]
 t0 = time.time()
 gt = read_gt(); pairs = gt_pairs(gt)
 s1 = load("train", 1, BLOCK_COLS + EXTRA)
 pool = load_pool("train", BLOCK_COLS + EXTRA)
 print(f"backend={BACKEND} | loaded in {time.time()-t0:.0f}s", flush=True)
 
-dev = gt.source1_entity_id.sample(50_000, random_state=0)
+dev = pd.Series(sorted(validation_s1_ids(gt)))
 dev_idx = pd.Index(dev.to_numpy())
 dev_pairs = pairs[pairs.s1.isin(dev_idx)]
 q = pd.concat([pool[pool.entity_id.isin(dev_pairs.cand)],

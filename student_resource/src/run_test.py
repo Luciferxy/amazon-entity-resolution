@@ -43,24 +43,26 @@ def main():
     p = model.predict(F[meta["features"]])
     c.assign(p=p).to_parquet(CACHE / "test_scored.parquet", index=False)   # for later ensembling
 
-    # Cross-Encoder Rescoring (set ER_CE_MODE=full or cascade to enable)
-    ce_mode = os.environ.get("ER_CE_MODE", "none")
+    # Cross-Encoder Rescoring (set ER_CE_MODE=cascade, full, or none)
+    ce_mode = os.environ.get("ER_CE_MODE", "cascade")
 
-    if ce_mode == "full":
-        from hybrid_cross_encoder import full_cross_encoder_score
-        print("\n>>> [Option 3] Running Full Cross-Encoder Scoring on ALL candidate pairs...", flush=True)
-        # Reload with raw business_address for richer cross-encoder input
+    if ce_mode in ("full", "cascade"):
         ce_cols = ALL_COLS + ["business_address"]
         s1_wide = load("test", 1, ce_cols)
         pool_wide = load_pool("test", ce_cols)
-        ce_probs = full_cross_encoder_score(c, s1_wide, pool_wide, batch_size=512)
+
+        if ce_mode == "full":
+            from hybrid_cross_encoder import full_cross_encoder_score
+            print("\n>>> [Option 3] Running Full Cross-Encoder Scoring on ALL candidate pairs...", flush=True)
+            ce_probs = full_cross_encoder_score(c, s1_wide, pool_wide, batch_size=512, max_length=96)
+            # Ensemble: 40% LightGBM surface features + 60% Cross-Encoder deep attention
+            p = 0.40 * p + 0.60 * ce_probs
+        elif ce_mode == "cascade":
+            from hybrid_cross_encoder import cascade_rescore
+            print("\n>>> Running Cascade Cross-Encoder Rescoring on borderline candidate pairs...", flush=True)
+            p = cascade_rescore(c, p, s1_wide, pool_wide, low_thr=0.15, high_thr=0.70, ce_weight=0.50, batch_size=512, max_length=96)
+
         del s1_wide, pool_wide
-        # Ensemble: 40% LightGBM surface features + 60% Cross-Encoder deep attention
-        p = 0.40 * p + 0.60 * ce_probs
-    elif ce_mode == "cascade":
-        from hybrid_cross_encoder import cascade_rescore
-        print("\n>>> Running Cascade Cross-Encoder Rescoring on borderline candidate pairs...", flush=True)
-        p = cascade_rescore(c, p, s1, pool, low_thr=0.15, high_thr=0.70, ce_weight=0.50)
 
     pred = decide(c, p, all_s1, **meta["decision"])
     write(OUT / "matching_results.tsv", "matched_entity_ids", pred, all_s1)

@@ -28,7 +28,7 @@ from transformers import (
 )
 from sklearn.model_selection import GroupShuffleSplit
 
-from config import ROOT, W, CACHE, DATASET, load, load_pool, read_gt, gt_pairs
+from config import ROOT, W, CACHE, DATASET, K, load, load_pool, read_gt, gt_pairs
 from block import block, prune
 
 MODEL_NAME = os.environ.get("CE_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
@@ -36,7 +36,7 @@ OUT_DIR = W / "cross_encoder_finetuned"
 BATCH_SIZE = int(os.environ.get("CE_BATCH_SIZE", 64))
 EPOCHS = int(os.environ.get("CE_EPOCHS", 2))
 LR = float(os.environ.get("CE_LR", 2e-5))
-MAX_LEN = 128
+MAX_LEN = 96
 
 
 class EntityPairDataset(Dataset):
@@ -97,7 +97,7 @@ def mine_pairs(n_sample=80_000):
         # Filter pool for fast blocking
         is_sp = pool.entity_id.isin(sp.cand)
         q_samp = pd.concat([pool[is_sp], pool[~is_sp].sample(min(100_000, (~is_sp).sum()), random_state=42)])
-        c = prune(block(s1, q_samp, k=3), margin=1.0, floor=0.0)
+        c = prune(block(s1, q_samp, k=K), margin=1.0, floor=0.0)
 
     # Label candidates
     c = c.merge(pairs.assign(is_true=1), on=["s1", "cand"], how="left")

@@ -24,7 +24,7 @@ def _find_dataset():
 DATASET = _find_dataset()
 
 K = int(os.environ.get("ER_K", 5))                  # top-k S1 per pool record per channel
-PRUNE = dict(margin=1.0, floor=0.0, max_rank=10)    # keep all retrieved pairs; LightGBM ranks them
+PRUNE = dict(margin=1.0, floor=0.0, max_rank=32)    # retain the union from four retrieval channels
 BLOCK_COLS = ["entity_id", "country", "nosp", "addr"]
 FEAT_COLS = ["business_name", "name_full", "core", "nums", "zips"]
 ALL_COLS = BLOCK_COLS + FEAT_COLS
@@ -38,6 +38,10 @@ def load_pool(split, cols):
 def read_gt():
     return pd.read_csv(DATASET / "train/train_ground_truth.tsv", sep="\t",
                        dtype=str, keep_default_na=False)
+
+def validation_s1_ids(gt, n=50_000):
+    """Deterministic Source-1 holdout shared by the Kaggle recall and train steps."""
+    return set(gt.source1_entity_id.sample(min(n, len(gt)), random_state=0).tolist())
 
 def gt_pairs(gt):
     ex = gt.assign(m=gt.matched_entity_ids.str.split(",")).explode("m")

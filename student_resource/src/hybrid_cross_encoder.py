@@ -119,6 +119,17 @@ class FastCrossEncoder:
         return np.concatenate(probs_all)
 
 
+def _build_text_map(df):
+    ids = df["entity_id"].to_numpy(dtype=object)
+    names = df["business_name"].to_numpy(dtype=object)
+    addrs = df.get("business_address", df.get("addr", pd.Series([""] * len(df)))).to_numpy(dtype=object)
+    ctry = df["country"].to_numpy(dtype=object)
+    texts = np.array([
+        f"{n} | {a} [{c}]" for n, a, c in zip(names, addrs, ctry)
+    ], dtype=object)
+    return dict(zip(ids, texts))
+
+
 def cascade_rescore(
     candidates_df,
     lgb_probs,
@@ -128,7 +139,8 @@ def cascade_rescore(
     high_thr=0.70,
     ce_weight=0.50,
     model_name=DEFAULT_MODEL,
-    batch_size=256,
+    batch_size=512,
+    max_length=96,
 ):
     """
     Apply Cascade Reranking:
@@ -165,21 +177,15 @@ def cascade_rescore(
     # Extract text strings for borderline pairs
     borderline_df = candidates_df[borderline_mask].reset_index(drop=True)
     
-    s1_map = dict(zip(
-        s1_df["entity_id"].to_numpy(dtype=object),
-        (s1_df["name_full"] + " | " + s1_df["addr"]).to_numpy(dtype=object)
-    ))
-    pool_map = dict(zip(
-        pool_df["entity_id"].to_numpy(dtype=object),
-        (pool_df["name_full"] + " | " + pool_df["addr"]).to_numpy(dtype=object)
-    ))
+    s1_map = _build_text_map(s1_df)
+    pool_map = _build_text_map(pool_df)
 
     texts_a = [s1_map.get(s, "") for s in borderline_df["s1"].to_numpy(dtype=object)]
     texts_b = [pool_map.get(c, "") for c in borderline_df["cand"].to_numpy(dtype=object)]
 
     # Run Cross-Encoder inference
     ce = FastCrossEncoder(model_name=model_name)
-    ce_probs = ce.predict_probs(texts_a, texts_b, batch_size=batch_size)
+    ce_probs = ce.predict_probs(texts_a, texts_b, batch_size=batch_size, max_length=max_length)
 
     # Blend probabilities
     blended = (1.0 - ce_weight) * lgb_probs[borderline_mask] + ce_weight * ce_probs
@@ -196,6 +202,7 @@ def full_cross_encoder_score(
     pool_df,
     model_name=DEFAULT_MODEL,
     batch_size=512,
+    max_length=96,
     chunk_size=500_000,
     cache_tag="test_ce_full",
 ):
@@ -236,17 +243,6 @@ def full_cross_encoder_score(
     print(f" Batch Size: {batch_size} | Chunks: {n_chunks} x {chunk_size:,}")
     print(f"{'='*65}\n")
 
-    # Build text lookup: business_name + " | " + business_address + " [" + country + "]"
-    def _build_text_map(df):
-        ids = df["entity_id"].to_numpy(dtype=object)
-        names = df["business_name"].to_numpy(dtype=object)
-        addrs = df.get("business_address", df.get("addr", pd.Series([""] * len(df)))).to_numpy(dtype=object)
-        ctry = df["country"].to_numpy(dtype=object)
-        texts = np.array([
-            f"{n} | {a} [{c}]" for n, a, c in zip(names, addrs, ctry)
-        ], dtype=object)
-        return dict(zip(ids, texts))
-
     s1_map = _build_text_map(s1_df)
     pool_map = _build_text_map(pool_df)
 
@@ -272,7 +268,7 @@ def full_cross_encoder_score(
         texts_a = [s1_map.get(s, "") for s in chunk_c["s1"].to_numpy(dtype=object)]
         texts_b = [pool_map.get(c, "") for c in chunk_c["cand"].to_numpy(dtype=object)]
 
-        chunk_p = ce.predict_probs(texts_a, texts_b, batch_size=batch_size)
+        chunk_p = ce.predict_probs(texts_a, texts_b, batch_size=batch_size, max_length=max_length)
         pd.DataFrame({"p_ce": chunk_p}).to_parquet(chunk_cache, index=False)
 
         elapsed = time.time() - t_start

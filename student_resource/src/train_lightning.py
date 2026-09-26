@@ -27,7 +27,7 @@ import pandas as pd
 import lightgbm as lgb
 from sklearn.model_selection import GroupKFold
 
-from config import W, K, PRUNE, ALL_COLS, load, load_pool, read_gt, gt_pairs
+from config import W, K, PRUNE, ALL_COLS, load, load_pool, read_gt, gt_pairs, validation_s1_ids
 from block import block, prune
 from features import features
 from decide import decide
@@ -133,7 +133,12 @@ def main(n_s1=150_000, use_nn=False, force_gpu=True):
     pairs = gt_pairs(gt)
     s1 = load("train", 1, ALL_COLS)
 
-    sample = gt.source1_entity_id.sample(min(n_s1, len(gt)), random_state=1).tolist()
+    # Keep the deterministic blocker validation IDs completely out of matcher
+    # training so Kaggle's recall check is also a clean entity-level holdout.
+    heldout = validation_s1_ids(gt)
+    train_ids = gt.loc[~gt.source1_entity_id.isin(heldout), "source1_entity_id"]
+    sample = train_ids.sample(min(n_s1, len(train_ids)), random_state=1).tolist()
+    print(f"[Split] Training entities: {len(sample):,} | reserved validation entities: {len(heldout):,}", flush=True)
     sp = pairs[pairs.s1.isin(sample)]
 
     pool = load_pool("train", ALL_COLS)

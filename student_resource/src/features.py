@@ -54,7 +54,8 @@ def features(c, s1, pool, n_jobs=None, step=200_000):
     else:
         parts = [_chunk(b) for b in bounds]
     F = pd.concat(parts, ignore_index=True)
-    for col in ("sim_name", "sim_addr", "score", "best", "rank", "gap"):
+    for col in ("sim_name", "sim_addr", "sim_name_word", "sim_addr_word",
+                "score", "best", "rank", "gap"):
         F[col] = c[col].to_numpy()
     g = c.groupby("s1")["score"]
     F["n_cands"] = g.transform("size").to_numpy()
