@@ -9,8 +9,26 @@ def _row(args):
     addr, nums, zips = norm_addr(a, c)
     return full, core, nosp, addr, " ".join(sorted(nums)), " ".join(sorted(zips))
 
+from pathlib import Path
+
+def get_tsv_path(split, i):
+    p = DATASET / split / f"{split}_source{i}.tsv"
+    if p.exists(): return p
+    p_flat = DATASET / f"{split}_source{i}.tsv"
+    if p_flat.exists(): return p_flat
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        for f in kaggle_input.rglob(f"{split}_source{i}.tsv"):
+            if f.is_file(): return f
+    return p
+
 def prep(split, i):
-    df = pd.read_csv(DATASET / split / f"{split}_source{i}.tsv", sep="\t",
+    tsv_path = get_tsv_path(split, i)
+    if not tsv_path.exists():
+        print(f"Skipping {split} s{i} (file not found: {split}_source{i}.tsv)", flush=True)
+        return
+    print(f"Prepping {split} s{i} from {tsv_path}...", flush=True)
+    df = pd.read_csv(tsv_path, sep="\t",
                      dtype=str, keep_default_na=False, engine="pyarrow")
     df["country"] = df.country.str.strip().str.lower().replace("", "unk")
     with Pool() as p:
@@ -20,6 +38,12 @@ def prep(split, i):
     print(f"done {split} s{i}: {len(df):,} rows", flush=True)
 
 if __name__ == "__main__":
-    split = sys.argv[1] if len(sys.argv) > 1 else "train"
-    for i in (1, 2, 3):
-        prep(split, i)
+    if len(sys.argv) > 1:
+        splits = [sys.argv[1]]
+    else:
+        splits = ["train"]
+        if get_tsv_path("test", 1).exists():
+            splits.append("test")
+    for split in splits:
+        for i in (1, 2, 3):
+            prep(split, i)

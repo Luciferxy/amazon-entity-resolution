@@ -12,6 +12,23 @@ def main():
     t0 = time.time()
     meta = json.load(open(W / "model_meta.json"))
     model = lgb.Booster(model_file=str(W / "lgb.txt"))
+    # Ensure test parquet files exist
+    if not (W / "test_s1.parquet").exists():
+        from prep import prep, get_tsv_path
+        if get_tsv_path("test", 1).exists():
+            print("Preparing test splits...", flush=True)
+            for i in (1, 2, 3):
+                prep("test", i)
+        else:
+            print("\n" + "="*70)
+            print("[INFO] Test dataset files (test_source1.tsv, etc.) are not yet attached.")
+            print("Your model training and 4-fold CV have completed successfully.")
+            print("To generate final competition submission files:")
+            print("1. Upload/attach the test dataset folder to this Kaggle notebook.")
+            print("2. Re-run: !python src/run_test.py")
+            print("="*70 + "\n")
+            return
+
     s1 = load("test", 1, ALL_COLS); pool = load_pool("test", ALL_COLS)
     all_s1 = s1.entity_id.to_numpy(dtype=object).tolist()
     print(f"loaded {time.time()-t0:.0f}s | S1 {len(s1):,} | pool {len(pool):,}", flush=True)
