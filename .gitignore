@@ -1,0 +1,36 @@
+# Operating System
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Large Datasets & Intermediates (>100MB GitHub limit)
+student_resource/dataset/
+student_resource/work/*.parquet
+student_resource/work/*.parquet.*
+student_resource/output/*.tsv
+*.tsv
+*.parquet
+*.zip
+*.tar.gz
+
+# Keep model weights and metadata
+!student_resource/work/lgb.txt
+!student_resource/work/model_meta.json
+!student_resource/work/eval_block.txt
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp

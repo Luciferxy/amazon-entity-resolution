@@ -1,0 +1,3 @@
+loaded in 6s
+queries: 233,093 (172,662 true + 60,431 distractors)
+  block us: 139,571 queries vs 1,323,633 S1 in 722s

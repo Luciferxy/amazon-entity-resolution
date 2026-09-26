@@ -1,0 +1,43 @@
+{
+  "features": [
+    "n_tsr",
+    "n_tsort",
+    "n_ratio",
+    "n_part",
+    "n_jw",
+    "n_jac",
+    "n_first",
+    "n_lenr",
+    "a_tsr",
+    "a_part",
+    "a_jac",
+    "num_jac",
+    "zip_jac",
+    "num_conflict",
+    "zip_conflict",
+    "l_addr_missing",
+    "r_addr_missing",
+    "r_nums_missing",
+    "r_nonascii",
+    "sim_name",
+    "sim_addr",
+    "score",
+    "best",
+    "rank",
+    "gap",
+    "n_cands",
+    "score_vs_best_s1",
+    "is_s3"
+  ],
+  "decision": {
+    "mode": "thr",
+    "thr": 0.3
+  },
+  "prune": {
+    "margin": 1.0,
+    "floor": 0.0,
+    "max_rank": 10
+  },
+  "K": 5,
+  "rounds": 156
+}

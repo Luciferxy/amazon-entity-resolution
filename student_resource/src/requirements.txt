@@ -1,0 +1,11 @@
+pandas
+pyarrow
+numpy
+scipy
+scikit-learn
+lightgbm
+rapidfuzz
+anyascii
+sparse_dot_topn
+torch
+lightning
