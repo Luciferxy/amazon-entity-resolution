@@ -3,7 +3,7 @@ try:
 except ImportError:
     pass
 import json, time, numpy as np, pandas as pd, lightgbm as lgb
-from config import W, OUT, CACHE, ALL_COLS, load, load_pool
+from config import W, OUT, CACHE, ALL_COLS, DATASET, load, load_pool
 from block import block, prune
 from features import features
 from decide import decide, write
@@ -39,7 +39,7 @@ def main():
         sys.executable, str(W.parent / "utils/validate_submission.py"),
         "--matching", str(OUT / "matching_results.tsv"),
         "--candidate", str(OUT / "candidate_pairs.tsv"),
-        "--test-dir", str(W.parent / "dataset/test")
+        "--test-dir", str(DATASET / "test")
     ])
     print(f"Validator exit code: {val_res.returncode}", flush=True)
 
