@@ -188,3 +188,72 @@ def cascade_rescore(
     total_time = time.time() - t_start
     print(f"\n[DONE] Cascade rescoring completed in {total_time:.1f}s ({total_time/60:.1f} min)!")
     return p_final
+
+
+def full_cross_encoder_score(
+    candidates_df,
+    s1_df,
+    pool_df,
+    model_name=DEFAULT_MODEL,
+    batch_size=512,
+    chunk_size=500_000,
+    cache_tag="test_ce_full",
+):
+    """
+    Option 3: Full Cross-Encoder Scoring on ALL candidate pairs (e.g. 5.7M).
+    Features:
+      - Multi-GPU DataParallel inference (both T4 GPUs active).
+      - FP16 automatic mixed precision.
+      - 500k-pair chunked execution with intermediate parquet caching.
+    """
+    from config import CACHE
+    cache_file = CACHE / f"{cache_tag}.parquet"
+    if cache_file.exists():
+        print(f"[Full CE] Loading cached full Cross-Encoder scores from {cache_file}...", flush=True)
+        cached_df = pd.read_parquet(cache_file)
+        if len(cached_df) == len(candidates_df):
+            return cached_df["p_ce"].to_numpy(dtype=np.float32)
+
+    t_start = time.time()
+    total_pairs = len(candidates_df)
+    print(f"\n=======================================================")
+    print(f" Option 3: Full Cross-Encoder Scoring (All {total_pairs:,} Pairs)")
+    print(f" Model Backbone : {model_name}")
+    print(f" Batch Size     : {batch_size} (Dual GPU FP16)")
+    print(f"=======================================================\n")
+
+    if model_name == DEFAULT_MODEL:
+        finetuned_dir = W / "cross_encoder_finetuned"
+        if finetuned_dir.exists():
+            model_name = str(finetuned_dir)
+            print(f"Using fine-tuned Cross-Encoder weights from: {model_name}")
+
+    # Build text lookup
+    s1_map = dict(zip(
+        s1_df["entity_id"].to_numpy(dtype=object),
+        (s1_df["name_full"] + " | " + s1_df["addr"]).to_numpy(dtype=object)
+    ))
+    pool_map = dict(zip(
+        pool_df["entity_id"].to_numpy(dtype=object),
+        (pool_df["name_full"] + " | " + pool_df["addr"]).to_numpy(dtype=object)
+    ))
+
+    ce = FastCrossEncoder(model_name=model_name)
+    all_probs = []
+
+    for start_idx in range(0, total_pairs, chunk_size):
+        end_idx = min(start_idx + chunk_size, total_pairs)
+        chunk_c = candidates_df.iloc[start_idx:end_idx]
+        print(f"\n--- [Option 3] Scoring chunk [{start_idx:,} : {end_idx:,} / {total_pairs:,}] ---", flush=True)
+
+        texts_a = [s1_map.get(s, "") for s in chunk_c["s1"].to_numpy(dtype=object)]
+        texts_b = [pool_map.get(c, "") for c in chunk_c["cand"].to_numpy(dtype=object)]
+
+        chunk_p = ce.predict_probs(texts_a, texts_b, batch_size=batch_size)
+        all_probs.append(chunk_p)
+
+    final_probs = np.concatenate(all_probs)
+    pd.DataFrame({"p_ce": final_probs}).to_parquet(cache_file, index=False)
+    total_mins = (time.time() - t_start) / 60
+    print(f"\n[DONE] Full Cross-Encoder scored {total_pairs:,} pairs in {total_mins:.1f} minutes! Saved to {cache_file}.")
+    return final_probs

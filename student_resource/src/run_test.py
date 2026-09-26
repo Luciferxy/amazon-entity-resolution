@@ -42,11 +42,21 @@ def main():
     p = model.predict(F[meta["features"]])
     c.assign(p=p).to_parquet(CACHE / "test_scored.parquet", index=False)   # for later ensembling
 
-    # Two-Stage Cascade: Cross-Encoder Rescoring on borderline pairs (0.15 < p < 0.70)
-    ce_dir = W / "cross_encoder_finetuned"
-    use_ce = os.environ.get("ER_USE_CE", "1" if ce_dir.exists() else "0") == "1"
-    if use_ce:
+    # Cross-Encoder Rescoring (Option 3 Full vs Two-Stage Cascade)
+    ce_mode = os.environ.get("ER_CE_MODE")
+    if ce_mode is None:
+        ce_dir = W / "cross_encoder_finetuned"
+        ce_mode = "cascade" if (ce_dir.exists() or os.environ.get("ER_USE_CE") == "1") else "none"
+
+    if ce_mode == "full":
+        from hybrid_cross_encoder import full_cross_encoder_score
+        print("\n>>> [Option 3] Running Full Cross-Encoder Scoring on ALL candidate pairs...", flush=True)
+        ce_probs = full_cross_encoder_score(c, s1, pool, batch_size=512)
+        # Ensemble: 40% LightGBM surface features + 60% Cross-Encoder deep attention
+        p = 0.40 * p + 0.60 * ce_probs
+    elif ce_mode == "cascade":
         from hybrid_cross_encoder import cascade_rescore
+        print("\n>>> Running Cascade Cross-Encoder Rescoring on borderline candidate pairs...", flush=True)
         p = cascade_rescore(c, p, s1, pool, low_thr=0.15, high_thr=0.70, ce_weight=0.50)
 
     pred = decide(c, p, all_s1, **meta["decision"])
