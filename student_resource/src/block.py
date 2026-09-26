@@ -1,4 +1,5 @@
-import os, re, time, numpy as np, pandas as pd
+import os, re, time, warnings, numpy as np, pandas as pd
+warnings.filterwarnings("ignore", category=UserWarning)
 from sklearn.feature_extraction.text import TfidfVectorizer
 try:
     import sparse_dot_topn
