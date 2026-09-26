@@ -2,8 +2,9 @@ try:
     import sparse_dot_topn
 except ImportError:
     pass
-import json, time, numpy as np, pandas as pd, lightgbm as lgb
+import os, json, time, numpy as np, pandas as pd, lightgbm as lgb
 from config import W, OUT, CACHE, ALL_COLS, DATASET, load, load_pool
+from prep import get_tsv_path
 from block import block, prune
 from features import features
 from decide import decide, write
@@ -14,7 +15,7 @@ def main():
     model = lgb.Booster(model_file=str(W / "lgb.txt"))
     # Ensure test parquet files exist
     if not (W / "test_s1.parquet").exists():
-        from prep import prep, get_tsv_path
+        from prep import prep
         if get_tsv_path("test", 1).exists():
             print("Preparing test splits...", flush=True)
             for i in (1, 2, 3):
@@ -51,7 +52,12 @@ def main():
     if ce_mode == "full":
         from hybrid_cross_encoder import full_cross_encoder_score
         print("\n>>> [Option 3] Running Full Cross-Encoder Scoring on ALL candidate pairs...", flush=True)
-        ce_probs = full_cross_encoder_score(c, s1, pool, batch_size=512)
+        # Reload with raw business_address for richer cross-encoder input
+        ce_cols = ALL_COLS + ["business_address"]
+        s1_wide = load("test", 1, ce_cols)
+        pool_wide = load_pool("test", ce_cols)
+        ce_probs = full_cross_encoder_score(c, s1_wide, pool_wide, batch_size=512)
+        del s1_wide, pool_wide
         # Ensemble: 40% LightGBM surface features + 60% Cross-Encoder deep attention
         p = 0.40 * p + 0.60 * ce_probs
     elif ce_mode == "cascade":

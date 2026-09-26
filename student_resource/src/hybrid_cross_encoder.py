@@ -201,59 +201,97 @@ def full_cross_encoder_score(
 ):
     """
     Option 3: Full Cross-Encoder Scoring on ALL candidate pairs (e.g. 5.7M).
+
     Features:
       - Multi-GPU DataParallel inference (both T4 GPUs active).
       - FP16 automatic mixed precision.
-      - 500k-pair chunked execution with intermediate parquet caching.
+      - 500k-pair chunked execution with per-chunk parquet caching (resumable).
+      - Uses raw business_name + business_address + country for maximum
+        semantic signal to the transformer.
     """
     from config import CACHE
-    cache_file = CACHE / f"{cache_tag}.parquet"
-    if cache_file.exists():
-        print(f"[Full CE] Loading cached full Cross-Encoder scores from {cache_file}...", flush=True)
-        cached_df = pd.read_parquet(cache_file)
-        if len(cached_df) == len(candidates_df):
-            return cached_df["p_ce"].to_numpy(dtype=np.float32)
+    final_cache = CACHE / f"{cache_tag}.parquet"
+
+    # Check complete cache first
+    if final_cache.exists():
+        print(f"[Full CE] Loading cached scores from {final_cache}...", flush=True)
+        cached = pd.read_parquet(final_cache)
+        if len(cached) == len(candidates_df):
+            return cached["p_ce"].to_numpy(dtype=np.float32)
+        print(f"[Full CE] Cache length mismatch ({len(cached)} vs {len(candidates_df)}), re-scoring...", flush=True)
 
     t_start = time.time()
     total_pairs = len(candidates_df)
-    print(f"\n=======================================================")
-    print(f" Option 3: Full Cross-Encoder Scoring (All {total_pairs:,} Pairs)")
-    print(f" Model Backbone : {model_name}")
-    print(f" Batch Size     : {batch_size} (Dual GPU FP16)")
-    print(f"=======================================================\n")
+    n_chunks = (total_pairs + chunk_size - 1) // chunk_size
 
+    # Auto-detect finetuned weights
     if model_name == DEFAULT_MODEL:
         finetuned_dir = W / "cross_encoder_finetuned"
         if finetuned_dir.exists():
             model_name = str(finetuned_dir)
-            print(f"Using fine-tuned Cross-Encoder weights from: {model_name}")
 
-    # Build text lookup
-    s1_map = dict(zip(
-        s1_df["entity_id"].to_numpy(dtype=object),
-        (s1_df["name_full"] + " | " + s1_df["addr"]).to_numpy(dtype=object)
-    ))
-    pool_map = dict(zip(
-        pool_df["entity_id"].to_numpy(dtype=object),
-        (pool_df["name_full"] + " | " + pool_df["addr"]).to_numpy(dtype=object)
-    ))
+    print(f"\n{'='*65}")
+    print(f" Option 3: Full Cross-Encoder on ALL {total_pairs:,} Candidate Pairs")
+    print(f" Model     : {model_name}")
+    print(f" Batch Size: {batch_size} | Chunks: {n_chunks} x {chunk_size:,}")
+    print(f"{'='*65}\n")
+
+    # Build text lookup: business_name + " | " + business_address + " [" + country + "]"
+    def _build_text_map(df):
+        ids = df["entity_id"].to_numpy(dtype=object)
+        names = df["business_name"].to_numpy(dtype=object)
+        addrs = df.get("business_address", df.get("addr", pd.Series([""] * len(df)))).to_numpy(dtype=object)
+        ctry = df["country"].to_numpy(dtype=object)
+        texts = np.array([
+            f"{n} | {a} [{c}]" for n, a, c in zip(names, addrs, ctry)
+        ], dtype=object)
+        return dict(zip(ids, texts))
+
+    s1_map = _build_text_map(s1_df)
+    pool_map = _build_text_map(pool_df)
 
     ce = FastCrossEncoder(model_name=model_name)
     all_probs = []
 
-    for start_idx in range(0, total_pairs, chunk_size):
-        end_idx = min(start_idx + chunk_size, total_pairs)
-        chunk_c = candidates_df.iloc[start_idx:end_idx]
-        print(f"\n--- [Option 3] Scoring chunk [{start_idx:,} : {end_idx:,} / {total_pairs:,}] ---", flush=True)
+    for chunk_idx in range(n_chunks):
+        start = chunk_idx * chunk_size
+        end = min(start + chunk_size, total_pairs)
+        chunk_cache = CACHE / f"{cache_tag}_chunk{chunk_idx}.parquet"
+
+        # Per-chunk resume
+        if chunk_cache.exists():
+            chunk_p = pd.read_parquet(chunk_cache)["p_ce"].to_numpy(dtype=np.float32)
+            if len(chunk_p) == end - start:
+                print(f"  Chunk {chunk_idx+1}/{n_chunks} [{start:,}:{end:,}]: cached ({len(chunk_p):,} pairs)", flush=True)
+                all_probs.append(chunk_p)
+                continue
+
+        print(f"\n  Chunk {chunk_idx+1}/{n_chunks} [{start:,}:{end:,}] ({end-start:,} pairs)...", flush=True)
+        chunk_c = candidates_df.iloc[start:end]
 
         texts_a = [s1_map.get(s, "") for s in chunk_c["s1"].to_numpy(dtype=object)]
         texts_b = [pool_map.get(c, "") for c in chunk_c["cand"].to_numpy(dtype=object)]
 
         chunk_p = ce.predict_probs(texts_a, texts_b, batch_size=batch_size)
+        pd.DataFrame({"p_ce": chunk_p}).to_parquet(chunk_cache, index=False)
+
+        elapsed = time.time() - t_start
+        done_pairs = end
+        rate = done_pairs / elapsed
+        eta_min = (total_pairs - done_pairs) / rate / 60 if rate > 0 else 0
+        print(f"  Chunk {chunk_idx+1}/{n_chunks} done | {rate:.0f} pairs/sec | ETA: {eta_min:.1f} min remaining", flush=True)
         all_probs.append(chunk_p)
 
     final_probs = np.concatenate(all_probs)
-    pd.DataFrame({"p_ce": final_probs}).to_parquet(cache_file, index=False)
-    total_mins = (time.time() - t_start) / 60
-    print(f"\n[DONE] Full Cross-Encoder scored {total_pairs:,} pairs in {total_mins:.1f} minutes! Saved to {cache_file}.")
+    pd.DataFrame({"p_ce": final_probs}).to_parquet(final_cache, index=False)
+
+    # Clean up chunk caches
+    for chunk_idx in range(n_chunks):
+        chunk_cache = CACHE / f"{cache_tag}_chunk{chunk_idx}.parquet"
+        if chunk_cache.exists():
+            chunk_cache.unlink()
+
+    total_min = (time.time() - t_start) / 60
+    print(f"\n[DONE] Full Cross-Encoder scored {total_pairs:,} pairs in {total_min:.1f} min | Saved to {final_cache}")
     return final_probs
+
