@@ -34,7 +34,7 @@ export ER_BACKEND="gpu"
 export ER_GPU_MODE="exact"
 export ER_K=5
 
-TRAIN_SAMPLE=${1:-300000}
+TRAIN_SAMPLE=${1:-100000}
 echo "Configuration: ER_BACKEND=$ER_BACKEND, ER_GPU_MODE=$ER_GPU_MODE, ER_K=$ER_K, TRAIN_SAMPLE=$TRAIN_SAMPLE"
 
 # 4. Preprocessing check
