@@ -35,12 +35,29 @@ STATE_RE = {c: re.compile(r"\b(" + "|".join(sorted(map(re.escape, d), key=len, r
 NULLS = {"null", "none", "nan", "na"}
 DOMAIN_RE = re.compile(r"^(?:https?://)?(?:www\.)?([a-z0-9-]+)\.(?:com|net|org|biz|in|co\.in|fr)$")
 
+PHON = [                                              # phonetic equivalences for Indic transliterations
+    (re.compile(r"ph"), "f"),                          # phyuchar -> fyuchar (फ्यूचर -> future)
+    (re.compile(r"bh"), "b"),                          # bhagwan -> bagwan (भगवान -> bagwan)
+    (re.compile(r"chh"), "ch"),                        # chhattisgarh -> chatisgarh
+    (re.compile(r"shri"), "sri"),                      # shri -> sri (श्री)
+    (re.compile(r"ee"), "i"), (re.compile(r"oo"), "u"), # phonetic long vowels
+    (re.compile(r"aa"), "a"),
+    (re.compile(r"(.)\1"), r"\1"),                     # doubled consonants: tt->t, ss->s
+]
+
+def _phonetic(s):
+    """Collapse common Indic transliteration variants so they match Anglicized spellings."""
+    for pat, rep in PHON:
+        s = pat.sub(rep, s)
+    return s
+
 def base(s):
     if not isinstance(s, str): return ""
     s = anyascii(s).lower().strip().replace("&", " and ")
     s = DOMAIN_RE.sub(r"\1", s)
     s = re.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", s)        # 45ND -> 45
-    return re.sub(r"[^a-z0-9 ]+", " ", s)
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    return _phonetic(s)
 
 def norm_name(s):
     t = [LEGAL.get(w, w) for w in base(s).split()]

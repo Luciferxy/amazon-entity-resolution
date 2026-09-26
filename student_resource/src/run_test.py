@@ -43,11 +43,8 @@ def main():
     p = model.predict(F[meta["features"]])
     c.assign(p=p).to_parquet(CACHE / "test_scored.parquet", index=False)   # for later ensembling
 
-    # Cross-Encoder Rescoring (Option 3 Full vs Two-Stage Cascade)
-    ce_mode = os.environ.get("ER_CE_MODE")
-    if ce_mode is None:
-        ce_dir = W / "cross_encoder_finetuned"
-        ce_mode = "cascade" if (ce_dir.exists() or os.environ.get("ER_USE_CE") == "1") else "none"
+    # Cross-Encoder Rescoring (set ER_CE_MODE=full or cascade to enable)
+    ce_mode = os.environ.get("ER_CE_MODE", "none")
 
     if ce_mode == "full":
         from hybrid_cross_encoder import full_cross_encoder_score

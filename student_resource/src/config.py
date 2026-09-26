@@ -23,7 +23,7 @@ def _find_dataset():
 
 DATASET = _find_dataset()
 
-K = int(os.environ.get("ER_K", 3))                  # top-k S1 per pool record per channel
+K = int(os.environ.get("ER_K", 5))                  # top-k S1 per pool record per channel
 PRUNE = dict(margin=1.0, floor=0.0, max_rank=10)    # keep all retrieved pairs; LightGBM ranks them
 BLOCK_COLS = ["entity_id", "country", "nosp", "addr"]
 FEAT_COLS = ["business_name", "name_full", "core", "nums", "zips"]
