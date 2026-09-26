@@ -52,11 +52,12 @@ def main():
 
     print("\nRunning submission validator...", flush=True)
     import subprocess, sys
+    test_dir = str(get_tsv_path("test", 1).parent)
     val_res = subprocess.run([
         sys.executable, str(W.parent / "utils/validate_submission.py"),
         "--matching", str(OUT / "matching_results.tsv"),
         "--candidate", str(OUT / "candidate_pairs.tsv"),
-        "--test-dir", str(DATASET / "test")
+        "--test-dir", test_dir
     ])
     print(f"Validator exit code: {val_res.returncode}", flush=True)
 
