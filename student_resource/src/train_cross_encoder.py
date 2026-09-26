@@ -28,7 +28,7 @@ from transformers import (
 )
 from sklearn.model_selection import GroupShuffleSplit
 
-from config import ROOT, W, CACHE, DATASET, K, load, load_pool, read_gt, gt_pairs
+from config import ROOT, W, CACHE, DATASET, K, ALL_COLS, load, load_pool, read_gt, gt_pairs
 from block import block, prune
 
 MODEL_NAME = os.environ.get("CE_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
@@ -74,8 +74,8 @@ def mine_pairs(n_sample=80_000):
     gt = read_gt()
     pairs = gt_pairs(gt)
     
-    # Text columns
-    cols = ["entity_id", "business_name", "business_address", "country", "name_full", "addr"]
+    # Text columns - must include all blocking and feature columns
+    cols = list(dict.fromkeys(ALL_COLS + ["business_address"]))
     s1 = load("train", 1, cols)
     pool = load_pool("train", cols)
 
@@ -107,6 +107,7 @@ def mine_pairs(n_sample=80_000):
     c = c[c.s1.isin(sample_s1)]
 
     # Hard negatives: non-matching pairs with top similarity scores
+    c["score"] = c["score"].astype(np.float32)
     neg_df = c[c.is_true == 0].sort_values("score", ascending=False).groupby("s1").head(2)
     neg_df = neg_df[["s1", "cand"]].copy()
     neg_df["label"] = 0.0

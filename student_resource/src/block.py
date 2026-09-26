@@ -123,7 +123,7 @@ def _topk_gpu_svd(s1_text, q_text, k, kw, dim=256, fit_n=300_000,
             sub_q = Q[b:b + bs]
             sims = sub_q @ S.T
             v, idx = sims.topk(kk, dim=1)
-            v_np, idx_np = v.cpu().numpy(), idx.cpu().numpy()
+            v_np, idx_np = v.float().cpu().numpy(), idx.cpu().numpy()
             rows_b = np.repeat(np.arange(st + b, st + b + sub_q.shape[0]), kk)
             cols_b = idx_np.ravel()
             vals_b = v_np.ravel()
@@ -139,7 +139,7 @@ def _topk_gpu_svd(s1_text, q_text, k, kw, dim=256, fit_n=300_000,
         torch.cuda.empty_cache()
     if not R:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
-    return np.concatenate(R), np.concatenate(C), np.concatenate(V)
+    return np.concatenate(R).astype(np.int64), np.concatenate(C).astype(np.int64), np.concatenate(V).astype(np.float32)
 
 def _pick_topk():
     if BACKEND != "gpu": return _topk_cpu, "cpu"
@@ -196,14 +196,14 @@ def block(s1, pool, k=K, cache=None):
             del m, part
             m = merged
         m = m.fillna(0.0)
-        m["sim_name"] = m[["nosp", "name_word"]].max(axis=1)
-        m["sim_addr"] = m[["addr", "addr_word"]].max(axis=1)
-        m["score"] = m[["sim_name", "sim_addr"]].max(axis=1) + 0.5 * m[["sim_name", "sim_addr"]].min(axis=1)
+        m["sim_name"] = m[["nosp", "name_word"]].max(axis=1).astype(np.float32)
+        m["sim_addr"] = m[["addr", "addr_word"]].max(axis=1).astype(np.float32)
+        m["score"] = (m[["sim_name", "sim_addr"]].max(axis=1) + 0.5 * m[["sim_name", "sim_addr"]].min(axis=1)).astype(np.float32)
         m = m.sort_values(["q", "score"], ascending=[True, False]).reset_index(drop=True)
-        m["best"] = m.groupby("q")["score"].transform("first")
+        m["best"] = m.groupby("q")["score"].transform("first").astype(np.float32)
         m["rank"] = m.groupby("q").cumcount()
-        second = m.loc[m["rank"] == 1].set_index("q")["score"]
-        m["gap"] = m["best"] - m["q"].map(second).fillna(0.0)
+        second = m.loc[m["rank"] == 1].set_index("q")["score"].astype(np.float32)
+        m["gap"] = (m["best"] - m["q"].map(second).fillna(0.0)).astype(np.float32)
         s1_ids, q_ids = idx["entity_id"].to_numpy(dtype=object), q["entity_id"].to_numpy(dtype=object)
         res = pd.DataFrame({"s1": s1_ids[m["s"].to_numpy()], "cand": q_ids[m["q"].to_numpy()],
                             "sim_name": m["sim_name"].to_numpy(np.float32),
