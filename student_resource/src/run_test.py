@@ -42,6 +42,13 @@ def main():
     p = model.predict(F[meta["features"]])
     c.assign(p=p).to_parquet(CACHE / "test_scored.parquet", index=False)   # for later ensembling
 
+    # Two-Stage Cascade: Cross-Encoder Rescoring on borderline pairs (0.15 < p < 0.70)
+    ce_dir = W / "cross_encoder_finetuned"
+    use_ce = os.environ.get("ER_USE_CE", "1" if ce_dir.exists() else "0") == "1"
+    if use_ce:
+        from hybrid_cross_encoder import cascade_rescore
+        p = cascade_rescore(c, p, s1, pool, low_thr=0.15, high_thr=0.70, ce_weight=0.50)
+
     pred = decide(c, p, all_s1, **meta["decision"])
     write(OUT / "matching_results.tsv", "matched_entity_ids", pred, all_s1)
     n = np.array([len(pred[s]) for s in all_s1]); ctry = s1.country.to_numpy(dtype=object)

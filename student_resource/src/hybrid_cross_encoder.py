@@ -18,6 +18,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from config import W
 
 # Default cross-encoder backbone (fast, accurate 6-layer transformer)
 DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -64,6 +65,10 @@ class FastCrossEncoder:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name).to(self.device)
         self.model.eval()
+
+        if self.device == "cuda" and torch.cuda.device_count() > 1:
+            print(f"Distributing Cross-Encoder inference across {torch.cuda.device_count()} GPUs (DataParallel)...")
+            self.model = nn.DataParallel(self.model)
 
         if self.device == "cuda" and torch.cuda.is_bf16_supported():
             self.dtype = torch.bfloat16
@@ -133,6 +138,12 @@ def cascade_rescore(
     """
     t_start = time.time()
     p_final = np.array(lgb_probs, dtype=np.float32).copy()
+
+    if model_name == DEFAULT_MODEL:
+        finetuned_dir = W / "cross_encoder_finetuned"
+        if finetuned_dir.exists():
+            model_name = str(finetuned_dir)
+            print(f"Using fine-tuned Cross-Encoder weights from: {model_name}")
 
     # Identify borderline pairs
     borderline_mask = (lgb_probs > low_thr) & (lgb_probs < high_thr)
