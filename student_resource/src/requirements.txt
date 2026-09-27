@@ -9,3 +9,4 @@ anyascii
 sparse_dot_topn
 torch
 lightning
+transformers

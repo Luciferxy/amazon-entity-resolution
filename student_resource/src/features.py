@@ -47,7 +47,7 @@ def features(c, s1, pool, n_jobs=None, step=200_000):
     assert (lpos >= 0).all() and (rpos >= 0).all(), "ids missing from s1/pool"
     _G.update(s1=s1, pool=pool, lpos=lpos, rpos=rpos)
     bounds = [(i, min(i + step, len(c))) for i in range(0, len(c), step)]
-    n = n_jobs or min(os.cpu_count(), 8)
+    n = n_jobs if n_jobs is not None else int(os.environ.get("ER_FEAT_JOBS", "1"))
     if n > 1 and len(bounds) > 1:
         with mp.get_context("fork").Pool(n) as p:
             parts = p.map(_chunk, bounds)

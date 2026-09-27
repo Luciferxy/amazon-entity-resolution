@@ -22,20 +22,33 @@ def get_tsv_path(split, i):
             if f.is_file(): return f
     return p
 
+import os, gc
+
 def prep(split, i):
     tsv_path = get_tsv_path(split, i)
     if not tsv_path.exists():
         print(f"Skipping {split} s{i} (file not found: {split}_source{i}.tsv)", flush=True)
         return
+    out_parquet = W / f"{split}_s{i}.parquet"
+    if out_parquet.exists():
+        print(f"{split} s{i} already prepared ({out_parquet.name}).", flush=True)
+        return
     print(f"Prepping {split} s{i} from {tsv_path}...", flush=True)
     df = pd.read_csv(tsv_path, sep="\t",
                      dtype=str, keep_default_na=False, engine="pyarrow")
     df["country"] = df.country.str.strip().str.lower().replace("", "unk")
-    with Pool() as p:
-        res = p.map(_row, zip(df.business_name, df.business_address, df.country), chunksize=20_000)
+    n_workers = int(os.environ.get("ER_PREP_WORKERS", "2"))
+    if n_workers > 1:
+        with Pool(n_workers) as p:
+            res = p.map(_row, zip(df.business_name, df.business_address, df.country), chunksize=20_000)
+    else:
+        res = [_row(x) for x in zip(df.business_name, df.business_address, df.country)]
     df[["name_full", "core", "nosp", "addr", "nums", "zips"]] = pd.DataFrame(res, index=df.index)
-    df.to_parquet(W / f"{split}_s{i}.parquet", index=False)
+    del res
+    df.to_parquet(out_parquet, index=False)
     print(f"done {split} s{i}: {len(df):,} rows", flush=True)
+    del df
+    gc.collect()
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
