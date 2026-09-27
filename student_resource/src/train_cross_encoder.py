@@ -88,12 +88,19 @@ def mine_pairs(n_sample=80_000):
     tp_df["label"] = 1.0
 
     # Look for cached candidate parquet from train
-    cached_files = list(CACHE.glob("*train*.parquet"))
+    cached_files = [f for f in CACHE.glob("block_v2_*train*.parquet") if f.is_file()]
+    c = None
     if cached_files:
-        print(f"Loading candidate pairs from cache: {[f.name for f in cached_files]}", flush=True)
-        c = pd.concat([pd.read_parquet(f) for f in cached_files], ignore_index=True)
-        c = c[c.s1.isin(sample_s1)].reset_index(drop=True)
-    else:
+        try:
+            print(f"Loading candidate pairs from cache: {[f.name for f in cached_files]}", flush=True)
+            candidate_df = pd.concat([pd.read_parquet(f) for f in cached_files], ignore_index=True)
+            if "s1" in candidate_df.columns and "cand" in candidate_df.columns:
+                c = candidate_df[candidate_df.s1.isin(sample_s1)].reset_index(drop=True)
+        except Exception as e:
+            print(f"Could not load cache ({e}), falling back to blocking...", flush=True)
+            c = None
+
+    if c is None:
         print("Generating candidate pairs via blocking...", flush=True)
         s1_sub = s1[s1.entity_id.isin(sample_s1)].reset_index(drop=True)
         # Filter pool for fast blocking
