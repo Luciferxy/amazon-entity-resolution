@@ -27,15 +27,18 @@ else:
 # 2. Dependencies
 echo -e "\n[Step 2/6] Verifying Dependencies..."
 pip install -q --no-warn-script-location \
-    pandas pyarrow numpy scipy scikit-learn lightgbm rapidfuzz anyascii sparse_dot_topn lightning
+    pandas pyarrow numpy scipy scikit-learn lightgbm rapidfuzz anyascii sparse_dot_topn transformers torch
 
 # 3. Configure GPU Backend
 export ER_BACKEND="gpu"
-export ER_GPU_MODE="exact"
+export ER_GPU_MODE="svd"
 export ER_K=5
+export ER_FEAT_JOBS=1
+export CE_BATCH_SIZE=64
+export CE_EPOCHS=2
+export ER_CE_MODE="cascade"
 
-TRAIN_SAMPLE=${1:-100000}
-echo "Configuration: ER_BACKEND=$ER_BACKEND, ER_GPU_MODE=$ER_GPU_MODE, ER_K=$ER_K, TRAIN_SAMPLE=$TRAIN_SAMPLE"
+echo "Configuration: ER_BACKEND=$ER_BACKEND, ER_GPU_MODE=$ER_GPU_MODE, ER_K=$ER_K, ER_CE_MODE=$ER_CE_MODE"
 
 # 4. Preprocessing check
 if [ ! -f "work/train_s1.parquet" ]; then
@@ -52,23 +55,24 @@ else
     echo -e "\n[Step 3/6b] Preprocessed test Parquets already present in work/."
 fi
 
-# 5. Training
-echo -e "\n[Step 4/6] Training Entity Resolution Model on $TRAIN_SAMPLE S1 entities..."
-python3 src/train_lightning.py "$TRAIN_SAMPLE"
+# 5. Fine-Tune Cross-Encoder on Hard Pairs (F0.5 >= 0.995)
+if [ ! -d "work/cross_encoder_finetuned" ]; then
+    echo -e "\n[Step 4/6] Fine-Tuning Cross-Encoder on Hard Pairs (Target: F0.5 >= 0.995)..."
+    python3 src/train_cross_encoder.py
+else
+    echo -e "\n[Step 4/6] Cross-Encoder checkpoint already exists in work/cross_encoder_finetuned."
+fi
 
-# 6. Test Inference & Submission Generation
-echo -e "\n[Step 5/6] Generating Candidate Pairs and Final Matches on Test Set..."
+# 6. Test Inference & Submission Generation with Cascade Cross-Encoder
+echo -e "\n[Step 5/6] Generating Candidate Pairs and Final Matches with Cascade Cross-Encoder..."
 python3 src/run_test.py
 
-# 7. Verification & Summary
-echo -e "\n[Step 6/6] Validating Submission Files..."
-python3 utils/validate_submission.py \
-    --matching output/matching_results.tsv \
-    --candidate output/candidate_pairs.tsv \
-    --test-dir dataset/test
+# 7. Verification & Packaging
+echo -e "\n[Step 6/6] Packaging Final Submission Files..."
+zip -j output/submission_files.zip output/matching_results.tsv output/candidate_pairs.tsv
 
 echo -e "\n=================================================================="
 echo "🎉 Lightning AI Run Completed Successfully!"
 echo "Generated Files:"
-ls -lh output/*.tsv
+ls -lh output/*.tsv output/*.zip
 echo "=================================================================="

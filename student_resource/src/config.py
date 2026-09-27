@@ -13,6 +13,8 @@ def _find_dataset():
         if p.exists(): return p
     if (ROOT / "dataset/train/train_source1.tsv").exists():
         return ROOT / "dataset"
+    if (ROOT.parent / "dataset/train/train_source1.tsv").exists():
+        return ROOT.parent / "dataset"
     # Auto-detect Kaggle input directory
     kaggle_input = Path("/kaggle/input")
     if kaggle_input.exists():
