@@ -111,7 +111,7 @@ def main():
         if ce_mode == "cascade" and ce_engine is not None:
             from hybrid_cross_encoder import cascade_rescore
             print(f"  [{ctry}] Running Cascade Cross-Encoder Rescoring...", flush=True)
-            p_c = cascade_rescore(c_c, p_c, s1_c, pool_c, low_thr=0.15, high_thr=0.70, ce_weight=0.50, ce_engine=ce_engine)
+            p_c = cascade_rescore(c_c, p_c, s1_c, pool_c, low_thr=0.40, high_thr=0.85, ce_weight=0.65, ce_engine=ce_engine)
         elif ce_mode == "full":
             from hybrid_cross_encoder import full_cross_encoder_score
             print(f"  [{ctry}] Running Full Cross-Encoder Scoring...", flush=True)

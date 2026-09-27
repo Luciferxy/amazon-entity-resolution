@@ -34,7 +34,7 @@ from block import block, prune
 MODEL_NAME = os.environ.get("CE_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 OUT_DIR = W / "cross_encoder_finetuned"
 BATCH_SIZE = int(os.environ.get("CE_BATCH_SIZE", 64))
-EPOCHS = int(os.environ.get("CE_EPOCHS", 2))
+EPOCHS = int(os.environ.get("CE_EPOCHS", 4))
 LR = float(os.environ.get("CE_LR", 2e-5))
 MAX_LEN = 96
 

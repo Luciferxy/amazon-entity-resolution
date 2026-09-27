@@ -30,14 +30,15 @@
     "is_s3"
   ],
   "decision": {
-    "mode": "thr",
-    "thr": 0.3
+    "mode": "ef",
+    "pmin": 0.15,
+    "ceil": 0.99
   },
   "prune": {
-    "margin": 1.0,
+    "margin": 0.7,
     "floor": 0.0,
-    "max_rank": 10
+    "max_rank": 8
   },
-  "K": 5,
+  "K": 7,
   "rounds": 156
 }
