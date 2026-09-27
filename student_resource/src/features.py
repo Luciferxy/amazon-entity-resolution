@@ -57,8 +57,13 @@ def features(c, s1, pool, n_jobs=None, step=200_000):
     for col in ("sim_name", "sim_addr", "sim_name_word", "sim_addr_word",
                 "score", "best", "rank", "gap"):
         F[col] = c[col].to_numpy()
-    g = c.groupby("s1")["score"]
-    F["n_cands"] = g.transform("size").to_numpy()
-    F["score_vs_best_s1"] = (c["score"] - g.transform("max")).to_numpy()
-    F["is_s3"] = c["cand"].str.startswith("S3-").to_numpy().astype(np.int8)
+    if "n_cands" in c.columns:
+        F["n_cands"] = c["n_cands"].to_numpy()
+        F["score_vs_best_s1"] = c["score_vs_best_s1"].to_numpy()
+        F["is_s3"] = c["is_s3"].to_numpy()
+    else:
+        g = c.groupby("s1")["score"]
+        F["n_cands"] = g.transform("size").to_numpy()
+        F["score_vs_best_s1"] = (c["score"] - g.transform("max")).to_numpy()
+        F["is_s3"] = c["cand"].str.startswith("S3-").to_numpy().astype(np.int8)
     return F

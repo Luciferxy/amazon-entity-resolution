@@ -145,9 +145,8 @@ def _pick_topk():
     if BACKEND != "gpu": return _topk_cpu, "cpu"
     return (_topk_gpu_exact, "gpu-exact") if GPU_MODE == "exact" else (_topk_gpu_svd, "gpu-svd")
 
-# ---------- blocking ----------
-def block(s1, pool, k=K, cache=None):
-    """Pool-side top-k retrieval across name/address character and word channels."""
+def block_country(s1, pool, c, k=K, cache=None):
+    """Pool-side top-k retrieval for a single country (loads from cache if available)."""
     topk, tag = _pick_topk()
     items = list(CHANNELS.items())
     n_gpus = 0
@@ -158,65 +157,70 @@ def block(s1, pool, k=K, cache=None):
         except ImportError:
             n_gpus = 0
 
+    mode_tag = GPU_MODE if BACKEND == "gpu" else "cpu"
+    f = CACHE / f"block_v2_{BACKEND}_{mode_tag}_k{k}_{cache}_{re.sub(r'[^a-z0-9]+', '_', str(c))}.parquet" if cache else None
+    if f is not None and f.exists():
+        print(f"  block {c}: cached ({f.name})", flush=True)
+        return pd.read_parquet(f)
+
+    t = time.time()
+    q = pool[pool["country"] == c]
+    idx = s1[s1["country"] == c]
+    if len(idx) == 0: idx = s1                              # unseen-country fallback
+
+    parts = []
+    if n_gpus >= 2 and BACKEND == "gpu":
+        from concurrent.futures import ThreadPoolExecutor
+        def _run_channel(item):
+            ch_idx, (channel, (text_col, kw)) = item
+            dev = f"cuda:{ch_idx % n_gpus}"
+            tc = time.time()
+            r, s, v = topk(_txt(idx[text_col]), _txt(q[text_col]), k, kw, device=dev)
+            print(f"    {c}/{channel} on {dev}: {len(r):,} hits in {time.time()-tc:.0f}s", flush=True)
+            return pd.DataFrame({"q": r, "s": s, channel: v})
+        for st in range(0, len(items), n_gpus):
+            with ThreadPoolExecutor(max_workers=n_gpus) as ex:
+                parts.extend(ex.map(_run_channel, enumerate(items[st:st+n_gpus], start=st)))
+    else:
+        for channel, (text_col, kw) in items:
+            tc = time.time()
+            r, s, v = topk(_txt(idx[text_col]), _txt(q[text_col]), k, kw)
+            parts.append(pd.DataFrame({"q": r, "s": s, channel: v}))
+            print(f"    {c}/{channel}: {len(r):,} hits in {time.time()-tc:.0f}s", flush=True)
+    m = parts.pop(0)
+    while parts:
+        part = parts.pop(0)
+        merged = m.merge(part, on=["q", "s"], how="outer")
+        del m, part
+        m = merged
+    m = m.fillna(0.0)
+    m["sim_name"] = m[["nosp", "name_word"]].max(axis=1).astype(np.float32)
+    m["sim_addr"] = m[["addr", "addr_word"]].max(axis=1).astype(np.float32)
+    m["score"] = (m[["sim_name", "sim_addr"]].max(axis=1) + 0.5 * m[["sim_name", "sim_addr"]].min(axis=1)).astype(np.float32)
+    m = m.sort_values(["q", "score"], ascending=[True, False]).reset_index(drop=True)
+    m["best"] = m.groupby("q")["score"].transform("first").astype(np.float32)
+    m["rank"] = m.groupby("q").cumcount()
+    second = m.loc[m["rank"] == 1].set_index("q")["score"].astype(np.float32)
+    m["gap"] = (m["best"] - m["q"].map(second).fillna(0.0)).astype(np.float32)
+    s1_ids, q_ids = idx["entity_id"].to_numpy(dtype=object), q["entity_id"].to_numpy(dtype=object)
+    res = pd.DataFrame({"s1": s1_ids[m["s"].to_numpy()], "cand": q_ids[m["q"].to_numpy()],
+                        "sim_name": m["sim_name"].to_numpy(np.float32),
+                        "sim_addr": m["sim_addr"].to_numpy(np.float32),
+                        "sim_name_word": m["name_word"].to_numpy(np.float32),
+                        "sim_addr_word": m["addr_word"].to_numpy(np.float32),
+                        "score": m["score"].to_numpy(np.float32),
+                        "best": m["best"].to_numpy(np.float32),
+                        "rank": m["rank"].to_numpy(np.int16),
+                        "gap": m["gap"].to_numpy(np.float32)})
+    if f is not None: res.to_parquet(f, index=False)
+    print(f"  block {c} [{tag}]: {len(q):,} queries vs {len(idx):,} S1 in {time.time()-t:.0f}s", flush=True)
+    return res
+
+def block(s1, pool, k=K, cache=None):
+    """Pool-side top-k retrieval across name/address character and word channels."""
     out = []
     for c in pd.unique(pool["country"].to_numpy(dtype=object)):
-        # Versioned names prevent stale retrieval settings from overriding this run.
-        mode_tag = GPU_MODE if BACKEND == "gpu" else "cpu"
-        f = CACHE / f"block_v2_{BACKEND}_{mode_tag}_k{k}_{cache}_{re.sub(r'[^a-z0-9]+', '_', str(c))}.parquet" if cache else None
-        if f is not None and f.exists():
-            out.append(pd.read_parquet(f)); print(f"  block {c}: cached ({f.name})", flush=True); continue
-        t = time.time()
-        q = pool[pool["country"] == c]
-        idx = s1[s1["country"] == c]
-        if len(idx) == 0: idx = s1                              # unseen-country fallback
-
-        parts = []
-        if n_gpus >= 2 and BACKEND == "gpu":
-            from concurrent.futures import ThreadPoolExecutor
-            def _run_channel(item):
-                ch_idx, (channel, (text_col, kw)) = item
-                dev = f"cuda:{ch_idx % n_gpus}"
-                tc = time.time()
-                r, s, v = topk(_txt(idx[text_col]), _txt(q[text_col]), k, kw, device=dev)
-                print(f"    {c}/{channel} on {dev}: {len(r):,} hits in {time.time()-tc:.0f}s", flush=True)
-                return pd.DataFrame({"q": r, "s": s, channel: v})
-            for st in range(0, len(items), n_gpus):
-                with ThreadPoolExecutor(max_workers=n_gpus) as ex:
-                    parts.extend(ex.map(_run_channel, enumerate(items[st:st+n_gpus], start=st)))
-        else:
-            for channel, (text_col, kw) in items:
-                tc = time.time()
-                r, s, v = topk(_txt(idx[text_col]), _txt(q[text_col]), k, kw)
-                parts.append(pd.DataFrame({"q": r, "s": s, channel: v}))
-                print(f"    {c}/{channel}: {len(r):,} hits in {time.time()-tc:.0f}s", flush=True)
-        m = parts.pop(0)
-        while parts:
-            part = parts.pop(0)
-            merged = m.merge(part, on=["q", "s"], how="outer")
-            del m, part
-            m = merged
-        m = m.fillna(0.0)
-        m["sim_name"] = m[["nosp", "name_word"]].max(axis=1).astype(np.float32)
-        m["sim_addr"] = m[["addr", "addr_word"]].max(axis=1).astype(np.float32)
-        m["score"] = (m[["sim_name", "sim_addr"]].max(axis=1) + 0.5 * m[["sim_name", "sim_addr"]].min(axis=1)).astype(np.float32)
-        m = m.sort_values(["q", "score"], ascending=[True, False]).reset_index(drop=True)
-        m["best"] = m.groupby("q")["score"].transform("first").astype(np.float32)
-        m["rank"] = m.groupby("q").cumcount()
-        second = m.loc[m["rank"] == 1].set_index("q")["score"].astype(np.float32)
-        m["gap"] = (m["best"] - m["q"].map(second).fillna(0.0)).astype(np.float32)
-        s1_ids, q_ids = idx["entity_id"].to_numpy(dtype=object), q["entity_id"].to_numpy(dtype=object)
-        res = pd.DataFrame({"s1": s1_ids[m["s"].to_numpy()], "cand": q_ids[m["q"].to_numpy()],
-                            "sim_name": m["sim_name"].to_numpy(np.float32),
-                            "sim_addr": m["sim_addr"].to_numpy(np.float32),
-                            "sim_name_word": m["name_word"].to_numpy(np.float32),
-                            "sim_addr_word": m["addr_word"].to_numpy(np.float32),
-                            "score": m["score"].to_numpy(np.float32),
-                            "best": m["best"].to_numpy(np.float32),
-                            "rank": m["rank"].to_numpy(np.int16),
-                            "gap": m["gap"].to_numpy(np.float32)})
-        if f is not None: res.to_parquet(f, index=False)
-        out.append(res)
-        print(f"  block {c} [{tag}]: {len(q):,} queries vs {len(idx):,} S1 in {time.time()-t:.0f}s", flush=True)
+        out.append(block_country(s1, pool, c, k, cache))
     return pd.concat(out, ignore_index=True)
 
 def prune(raw, margin=1.0, floor=0.0, max_rank=10):

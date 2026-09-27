@@ -141,6 +141,7 @@ def cascade_rescore(
     model_name=DEFAULT_MODEL,
     batch_size=512,
     max_length=96,
+    ce_engine=None,
 ):
     """
     Apply Cascade Reranking:
@@ -151,7 +152,7 @@ def cascade_rescore(
     t_start = time.time()
     p_final = np.array(lgb_probs, dtype=np.float32).copy()
 
-    if model_name == DEFAULT_MODEL:
+    if ce_engine is None and model_name == DEFAULT_MODEL:
         finetuned_dir = W / "cross_encoder_finetuned"
         if finetuned_dir.exists():
             model_name = str(finetuned_dir)
@@ -184,7 +185,7 @@ def cascade_rescore(
     texts_b = [pool_map.get(c, "") for c in borderline_df["cand"].to_numpy(dtype=object)]
 
     # Run Cross-Encoder inference
-    ce = FastCrossEncoder(model_name=model_name)
+    ce = ce_engine if ce_engine is not None else FastCrossEncoder(model_name=model_name)
     ce_probs = ce.predict_probs(texts_a, texts_b, batch_size=batch_size, max_length=max_length)
 
     # Blend probabilities

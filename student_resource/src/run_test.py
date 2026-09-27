@@ -2,10 +2,10 @@ try:
     import sparse_dot_topn
 except ImportError:
     pass
-import os, json, time, numpy as np, pandas as pd, lightgbm as lgb
+import os, gc, json, time, numpy as np, pandas as pd, lightgbm as lgb
 from config import W, OUT, CACHE, ALL_COLS, DATASET, load, load_pool
 from prep import get_tsv_path
-from block import block, prune
+from block import block_country, prune
 from features import features
 from decide import decide, write
 
@@ -13,6 +13,11 @@ def main():
     t0 = time.time()
     meta = json.load(open(W / "model_meta.json"))
     model = lgb.Booster(model_file=str(W / "lgb.txt"))
+    feature_names = meta["features"]
+    k_cand = meta.get("K", 5)
+    prune_params = meta.get("prune", {})
+    decision_params = meta.get("decision", {})
+
     # Ensure test parquet files exist
     if not (W / "test_s1.parquet").exists():
         from prep import prep
@@ -30,46 +35,108 @@ def main():
             print("="*70 + "\n")
             return
 
-    s1 = load("test", 1, ALL_COLS); pool = load_pool("test", ALL_COLS)
+    # Check Cross-Encoder mode
+    ce_mode = os.environ.get("ER_CE_MODE", "cascade")
+    load_cols = ALL_COLS + (["business_address"] if ce_mode in ("full", "cascade") else [])
+
+    s1 = load("test", 1, load_cols)
+    pool = load_pool("test", load_cols)
     all_s1 = s1.entity_id.to_numpy(dtype=object).tolist()
     print(f"loaded {time.time()-t0:.0f}s | S1 {len(s1):,} | pool {len(pool):,}", flush=True)
 
-    c = prune(block(s1, pool, meta["K"], cache="test_raw"), **meta["prune"])
-    write(OUT / "candidate_pairs.tsv", "candidate_entity_ids",
-          c.groupby("s1")["cand"].agg(list).to_dict(), all_s1)
-    print(f"candidates {len(c):,} | avg per S1 {len(c)/len(all_s1):.2f}", flush=True)
-
-    t0 = time.time(); F = features(c, s1, pool); print(f"features {time.time()-t0:.0f}s", flush=True)
-    p = model.predict(F[meta["features"]])
-    c.assign(p=p).to_parquet(CACHE / "test_scored.parquet", index=False)   # for later ensembling
-
-    # Cross-Encoder Rescoring (set ER_CE_MODE=cascade, full, or none)
-    ce_mode = os.environ.get("ER_CE_MODE", "cascade")
-
+    # Initialize shared Cross-Encoder engine if needed
+    ce_engine = None
     if ce_mode in ("full", "cascade"):
-        ce_cols = ALL_COLS + ["business_address"]
-        s1_wide = load("test", 1, ce_cols)
-        pool_wide = load_pool("test", ce_cols)
+        from hybrid_cross_encoder import FastCrossEncoder, DEFAULT_MODEL
+        finetuned_dir = W / "cross_encoder_finetuned"
+        model_path = str(finetuned_dir) if finetuned_dir.exists() else DEFAULT_MODEL
+        print(f"Initializing FastCrossEncoder ({model_path})...", flush=True)
+        ce_engine = FastCrossEncoder(model_name=model_path)
 
-        if ce_mode == "full":
-            from hybrid_cross_encoder import full_cross_encoder_score
-            print("\n>>> [Option 3] Running Full Cross-Encoder Scoring on ALL candidate pairs...", flush=True)
-            ce_probs = full_cross_encoder_score(c, s1_wide, pool_wide, batch_size=512, max_length=96)
-            # Ensemble: 40% LightGBM surface features + 60% Cross-Encoder deep attention
-            p = 0.40 * p + 0.60 * ce_probs
-        elif ce_mode == "cascade":
+    # Get distinct countries
+    countries = list(pd.unique(pool["country"].to_numpy(dtype=object)))
+    print(f"\nProcessing countries sequentially: {countries}", flush=True)
+
+    all_matches = {}
+    all_candidates = {}
+
+    for ctry in countries:
+        t_c = time.time()
+        print(f"\n=================== Country: {ctry} ===================", flush=True)
+        s1_c = s1[s1["country"] == ctry].copy()
+        if len(s1_c) == 0:
+            s1_c = s1.copy()
+        pool_c = pool[pool["country"] == ctry].copy()
+        s1_c_ids = s1_c.entity_id.to_numpy(dtype=object).tolist()
+
+        # 1. Blocking per country (reads from disk cache if exists)
+        c_c = block_country(s1_c, pool_c, ctry, k=k_cand, cache="test_raw")
+        if prune_params:
+            c_c = prune(c_c, **prune_params)
+        print(f"  [{ctry}] Candidate pairs: {len(c_c):,}", flush=True)
+
+        # Record candidates for candidate_pairs.tsv
+        cand_map = c_c.groupby("s1")["cand"].agg(list).to_dict()
+        all_candidates.update(cand_map)
+        del cand_map
+
+        # 2. Vectorized Feature Extraction & LightGBM Prediction in memory-safe chunks
+        g = c_c.groupby("s1")["score"]
+        c_c["n_cands"] = g.transform("size").to_numpy(dtype=np.int32)
+        c_c["score_vs_best_s1"] = (c_c["score"] - g.transform("max")).to_numpy(dtype=np.float32)
+        c_c["is_s3"] = c_c["cand"].str.startswith("S3-").to_numpy(dtype=np.int8)
+
+        CHUNK_SIZE = 4_000_000
+        n_chunks = (len(c_c) + CHUNK_SIZE - 1) // CHUNK_SIZE
+        probs_list = []
+        for ch_idx in range(n_chunks):
+            start_idx = ch_idx * CHUNK_SIZE
+            end_idx = min(start_idx + CHUNK_SIZE, len(c_c))
+            sub_c = c_c.iloc[start_idx:end_idx].reset_index(drop=True)
+            t_f = time.time()
+            F_sub = features(sub_c, s1_c, pool_c)
+            p_sub = model.predict(F_sub[feature_names])
+            probs_list.append(p_sub.astype(np.float32))
+            print(f"  [{ctry}] Chunk {ch_idx+1}/{n_chunks} ({len(sub_c):,} pairs): features+LGB in {time.time()-t_f:.1f}s", flush=True)
+            del sub_c, F_sub
+            gc.collect()
+
+        p_c = np.concatenate(probs_list) if probs_list else np.empty(0, dtype=np.float32)
+        del probs_list
+        gc.collect()
+
+        # 3. Cross-Encoder Cascade Rescoring on borderline pairs
+        if ce_mode == "cascade" and ce_engine is not None:
             from hybrid_cross_encoder import cascade_rescore
-            print("\n>>> Running Cascade Cross-Encoder Rescoring on borderline candidate pairs...", flush=True)
-            p = cascade_rescore(c, p, s1_wide, pool_wide, low_thr=0.15, high_thr=0.70, ce_weight=0.50, batch_size=512, max_length=96)
+            print(f"  [{ctry}] Running Cascade Cross-Encoder Rescoring...", flush=True)
+            p_c = cascade_rescore(c_c, p_c, s1_c, pool_c, low_thr=0.15, high_thr=0.70, ce_weight=0.50, ce_engine=ce_engine)
+        elif ce_mode == "full":
+            from hybrid_cross_encoder import full_cross_encoder_score
+            print(f"  [{ctry}] Running Full Cross-Encoder Scoring...", flush=True)
+            ce_p = full_cross_encoder_score(c_c, s1_c, pool_c, batch_size=512, max_length=96)
+            p_c = 0.40 * p_c + 0.60 * ce_p
 
-        del s1_wide, pool_wide
+        # 4. Decision Rule
+        pred_c = decide(c_c, p_c, s1_c_ids, **decision_params)
+        all_matches.update(pred_c)
+        n_matched = sum(len(v) for v in pred_c.values())
+        print(f"  [{ctry}] Finished in {time.time()-t_c:.1f}s | Matches: {n_matched:,}", flush=True)
 
-    pred = decide(c, p, all_s1, **meta["decision"])
-    write(OUT / "matching_results.tsv", "matched_entity_ids", pred, all_s1)
-    n = np.array([len(pred[s]) for s in all_s1]); ctry = s1.country.to_numpy(dtype=object)
-    print(f"avg matches {n.mean():.2f} | empty {np.mean(n == 0):.2%}")
-    for A in pd.unique(ctry):
-        k = ctry == A
+        del c_c, p_c, s1_c, pool_c
+        gc.collect()
+
+    # 5. Write submission files
+    print("\nWriting output/candidate_pairs.tsv...", flush=True)
+    write(OUT / "candidate_pairs.tsv", "candidate_entity_ids", all_candidates, all_s1)
+
+    print("Writing output/matching_results.tsv...", flush=True)
+    write(OUT / "matching_results.tsv", "matched_entity_ids", all_matches, all_s1)
+
+    n = np.array([len(all_matches.get(s, [])) for s in all_s1])
+    ctry_arr = s1.country.to_numpy(dtype=object)
+    print(f"\nFinal Stats: avg matches {n.mean():.2f} | empty {np.mean(n == 0):.2%}")
+    for A in pd.unique(ctry_arr):
+        k = ctry_arr == A
         print(f"  {A}: avg matches {n[k].mean():.2f} | empty {np.mean(n[k] == 0):.2%}")
 
     print("\nRunning submission validator...", flush=True)
