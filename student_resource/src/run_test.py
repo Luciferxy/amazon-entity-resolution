@@ -16,7 +16,10 @@ def main():
     feature_names = meta["features"]
     k_cand = meta.get("K", 5)
     prune_params = meta.get("prune", {})
-    decision_params = meta.get("decision", {})
+    decision_params = meta.get("decision", {"mode": "thr", "thr": 0.50})
+    if "ER_THR" in os.environ:
+        decision_params = {"mode": "thr", "thr": float(os.environ["ER_THR"])}
+        print(f"[Override] Using decision threshold: {decision_params}", flush=True)
 
     # Ensure test parquet files exist
     if not (W / "test_s1.parquet").exists():
@@ -43,8 +46,8 @@ def main():
     del s1_meta
     gc.collect()
 
-    # Check Cross-Encoder mode
-    ce_mode = os.environ.get("ER_CE_MODE", "cascade")
+    # Check Cross-Encoder mode (default 'none' unless fine-tuned model exists)
+    ce_mode = os.environ.get("ER_CE_MODE", "none")
     load_cols = ALL_COLS + (["business_address"] if ce_mode in ("full", "cascade") else [])
 
     # Initialize shared Cross-Encoder engine if needed
@@ -57,6 +60,7 @@ def main():
         ce_engine = FastCrossEncoder(model_name=model_path)
 
     print(f"\nProcessing countries sequentially: {countries} (Total S1 entities: {len(all_s1):,})", flush=True)
+    print(f"Decision mode: {decision_params} | Cross-Encoder: {ce_mode}", flush=True)
 
     all_matches = {}
     all_candidates = {}
@@ -65,17 +69,7 @@ def main():
         t_c = time.time()
         print(f"\n=================== Country: {ctry} ===================", flush=True)
 
-        pred_file = W / f"pred_{ctry}.json"
-        cand_file = W / f"cand_{ctry}.json"
-        if pred_file.exists() and cand_file.exists():
-            print(f"  [{ctry}] Found cached predictions on disk. Loading...", flush=True)
-            with open(pred_file) as fp: pred_c = json.load(fp)
-            with open(cand_file) as fc: cand_map = json.load(fc)
-            all_matches.update(pred_c)
-            all_candidates.update(cand_map)
-            n_matched = sum(len(v) for v in pred_c.values())
-            print(f"  [{ctry}] Cached Matches: {n_matched:,}", flush=True)
-            continue
+        prob_file = W / f"prob_{ctry}.npy"
 
         # Load ONLY this country's data directly from disk using pushdown filters!
         s1_c = load("test", 1, load_cols, country=ctry)
@@ -93,54 +87,63 @@ def main():
         cand_map = c_c.groupby("s1")["cand"].agg(list).to_dict()
         all_candidates.update(cand_map)
 
-        # 2. Vectorized Feature Extraction & LightGBM Prediction in memory-safe chunks
-        g = c_c.groupby("s1")["score"]
-        c_c["n_cands"] = g.transform("size").to_numpy(dtype=np.int32)
-        c_c["score_vs_best_s1"] = (c_c["score"] - g.transform("max")).to_numpy(dtype=np.float32)
-        c_c["is_s3"] = c_c["cand"].str.startswith("S3-").to_numpy(dtype=np.int8)
+        # 2. Probability Scoring (Load cached probs or compute with LightGBM)
+        p_c = None
+        if prob_file.exists() and os.environ.get("ER_RECOMPUTE_PROBS", "0") != "1":
+            try:
+                p_c = np.load(prob_file)
+                if len(p_c) == len(c_c):
+                    print(f"  [{ctry}] Loaded {len(p_c):,} cached probabilities from {prob_file.name}", flush=True)
+                else:
+                    print(f"  [{ctry}] Prob mismatch ({len(p_c)} vs {len(c_c)}), recomputing...", flush=True)
+                    p_c = None
+            except Exception:
+                p_c = None
 
-        CHUNK_SIZE = 2_000_000
-        n_chunks = (len(c_c) + CHUNK_SIZE - 1) // CHUNK_SIZE
-        probs_list = []
-        for ch_idx in range(n_chunks):
-            start_idx = ch_idx * CHUNK_SIZE
-            end_idx = min(start_idx + CHUNK_SIZE, len(c_c))
-            sub_c = c_c.iloc[start_idx:end_idx].reset_index(drop=True)
-            t_f = time.time()
-            F_sub = features(sub_c, s1_c, pool_c)
-            p_sub = model.predict(F_sub[feature_names])
-            probs_list.append(p_sub.astype(np.float32))
-            print(f"  [{ctry}] Chunk {ch_idx+1}/{n_chunks} ({len(sub_c):,} pairs): features+LGB in {time.time()-t_f:.1f}s", flush=True)
-            del sub_c, F_sub
+        if p_c is None:
+            g = c_c.groupby("s1")["score"]
+            c_c["n_cands"] = g.transform("size").to_numpy(dtype=np.int32)
+            c_c["score_vs_best_s1"] = (c_c["score"] - g.transform("max")).to_numpy(dtype=np.float32)
+            c_c["is_s3"] = c_c["cand"].str.startswith("S3-").to_numpy(dtype=np.int8)
+
+            CHUNK_SIZE = 2_000_000
+            n_chunks = (len(c_c) + CHUNK_SIZE - 1) // CHUNK_SIZE
+            probs_list = []
+            for ch_idx in range(n_chunks):
+                start_idx = ch_idx * CHUNK_SIZE
+                end_idx = min(start_idx + CHUNK_SIZE, len(c_c))
+                sub_c = c_c.iloc[start_idx:end_idx].reset_index(drop=True)
+                t_f = time.time()
+                F_sub = features(sub_c, s1_c, pool_c)
+                p_sub = model.predict(F_sub[feature_names])
+                probs_list.append(p_sub.astype(np.float32))
+                print(f"  [{ctry}] Chunk {ch_idx+1}/{n_chunks} ({len(sub_c):,} pairs): features+LGB in {time.time()-t_f:.1f}s", flush=True)
+                del sub_c, F_sub
+                gc.collect()
+
+            p_c = np.concatenate(probs_list) if probs_list else np.empty(0, dtype=np.float32)
+            del probs_list
             gc.collect()
 
-        p_c = np.concatenate(probs_list) if probs_list else np.empty(0, dtype=np.float32)
-        del probs_list
-        gc.collect()
+            # Cross-Encoder Rescoring (if enabled)
+            if ce_mode == "cascade" and ce_engine is not None:
+                from hybrid_cross_encoder import cascade_rescore
+                print(f"  [{ctry}] Running Cascade Cross-Encoder Rescoring...", flush=True)
+                p_c = cascade_rescore(c_c, p_c, s1_c, pool_c, low_thr=0.40, high_thr=0.85, ce_weight=0.65, ce_engine=ce_engine)
+            elif ce_mode == "full":
+                from hybrid_cross_encoder import full_cross_encoder_score
+                print(f"  [{ctry}] Running Full Cross-Encoder Scoring...", flush=True)
+                ce_p = full_cross_encoder_score(c_c, s1_c, pool_c, batch_size=512, max_length=96)
+                p_c = 0.40 * p_c + 0.60 * ce_p
 
-        # 3. Cross-Encoder Cascade Rescoring on borderline pairs
-        if ce_mode == "cascade" and ce_engine is not None:
-            from hybrid_cross_encoder import cascade_rescore
-            print(f"  [{ctry}] Running Cascade Cross-Encoder Rescoring...", flush=True)
-            p_c = cascade_rescore(c_c, p_c, s1_c, pool_c, low_thr=0.40, high_thr=0.85, ce_weight=0.65, ce_engine=ce_engine)
-        elif ce_mode == "full":
-            from hybrid_cross_encoder import full_cross_encoder_score
-            print(f"  [{ctry}] Running Full Cross-Encoder Scoring...", flush=True)
-            ce_p = full_cross_encoder_score(c_c, s1_c, pool_c, batch_size=512, max_length=96)
-            p_c = 0.40 * p_c + 0.60 * ce_p
+            np.save(prob_file, p_c)
+            print(f"  [{ctry}] Saved {len(p_c):,} probabilities to {prob_file.name}", flush=True)
 
-        # 4. Decision Rule
+        # 3. Decision Rule
         pred_c = decide(c_c, p_c, s1_c_ids, **decision_params)
         all_matches.update(pred_c)
         n_matched = sum(len(v) for v in pred_c.values())
         print(f"  [{ctry}] Finished in {time.time()-t_c:.1f}s | Matches: {n_matched:,}", flush=True)
-
-        # Checkpoint country predictions to disk immediately
-        try:
-            with open(pred_file, "w") as fp: json.dump(pred_c, fp)
-            with open(cand_file, "w") as fc: json.dump(cand_map, fc)
-        except Exception as e:
-            print(f"  [Checkpoint Warning] Could not write cache for {ctry}: {e}", flush=True)
 
         del c_c, p_c, s1_c, pool_c, cand_map
         gc.collect()

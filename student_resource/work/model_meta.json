@@ -30,9 +30,8 @@
     "is_s3"
   ],
   "decision": {
-    "mode": "ef",
-    "pmin": 0.15,
-    "ceil": 0.99
+    "mode": "thr",
+    "thr": 0.50
   },
   "prune": {
     "margin": 0.7,

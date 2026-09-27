@@ -56,7 +56,7 @@ def features(c, s1, pool, n_jobs=None, step=200_000):
     F = pd.concat(parts, ignore_index=True)
     for col in ("sim_name", "sim_addr", "sim_name_word", "sim_addr_word",
                 "score", "best", "rank", "gap"):
-        F[col] = c[col].to_numpy()
+        F[col] = c[col].to_numpy() if col in c.columns else np.zeros(len(c), dtype=np.float32)
     if "n_cands" in c.columns:
         F["n_cands"] = c["n_cands"].to_numpy()
         F["score_vs_best_s1"] = c["score_vs_best_s1"].to_numpy()
