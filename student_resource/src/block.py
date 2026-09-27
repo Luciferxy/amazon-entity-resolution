@@ -187,32 +187,64 @@ def block_country(s1, pool, c, k=K, cache=None):
             r, s, v = topk(_txt(idx[text_col]), _txt(q[text_col]), k, kw)
             parts.append(pd.DataFrame({"q": r, "s": s, channel: v}))
             print(f"    {c}/{channel}: {len(r):,} hits in {time.time()-tc:.0f}s", flush=True)
-    m = parts.pop(0)
-    while parts:
-        part = parts.pop(0)
-        merged = m.merge(part, on=["q", "s"], how="outer")
-        del m, part
-        m = merged
-    m = m.fillna(0.0)
-    m["sim_name"] = m[["nosp", "name_word"]].max(axis=1).astype(np.float32)
-    m["sim_addr"] = m[["addr", "addr_word"]].max(axis=1).astype(np.float32)
-    m["score"] = (m[["sim_name", "sim_addr"]].max(axis=1) + 0.5 * m[["sim_name", "sim_addr"]].min(axis=1)).astype(np.float32)
-    m = m.sort_values(["q", "score"], ascending=[True, False]).reset_index(drop=True)
-    m["best"] = m.groupby("q")["score"].transform("first").astype(np.float32)
-    m["rank"] = m.groupby("q").cumcount()
-    second = m.loc[m["rank"] == 1].set_index("q")["score"].astype(np.float32)
-    m["gap"] = (m["best"] - m["q"].map(second).fillna(0.0)).astype(np.float32)
-    s1_ids, q_ids = idx["entity_id"].to_numpy(dtype=object), q["entity_id"].to_numpy(dtype=object)
-    res = pd.DataFrame({"s1": s1_ids[m["s"].to_numpy()], "cand": q_ids[m["q"].to_numpy()],
-                        "sim_name": m["sim_name"].to_numpy(np.float32),
-                        "sim_addr": m["sim_addr"].to_numpy(np.float32),
-                        "sim_name_word": m["name_word"].to_numpy(np.float32),
-                        "sim_addr_word": m["addr_word"].to_numpy(np.float32),
-                        "score": m["score"].to_numpy(np.float32),
-                        "best": m["best"].to_numpy(np.float32),
-                        "rank": m["rank"].to_numpy(np.int16),
-                        "gap": m["gap"].to_numpy(np.float32)})
-    if f is not None: res.to_parquet(f, index=False)
+    s1_ids = idx["entity_id"].to_numpy(dtype=object)
+    q_ids = q["entity_id"].to_numpy(dtype=object)
+    n_q = len(q)
+    SLICE_SIZE = 500_000
+    merged_slices = []
+
+    print(f"    Merging channels for {c} ({n_q:,} queries in slices of {SLICE_SIZE:,})...", flush=True)
+    for q_st in range(0, n_q, SLICE_SIZE):
+        q_end = min(q_st + SLICE_SIZE, n_q)
+        slice_parts = []
+        for p_df in parts:
+            qa = p_df["q"].to_numpy()
+            lo = int(np.searchsorted(qa, q_st, side="left"))
+            hi = int(np.searchsorted(qa, q_end, side="left"))
+            slice_parts.append(p_df.iloc[lo:hi])
+
+        m_slice = slice_parts.pop(0)
+        while slice_parts:
+            m_slice = m_slice.merge(slice_parts.pop(0), on=["q", "s"], how="outer")
+
+        m_slice = m_slice.fillna(0.0)
+        for ch_col in ("nosp", "name_word", "addr", "addr_word"):
+            if ch_col not in m_slice.columns:
+                m_slice[ch_col] = np.float32(0.0)
+
+        m_slice["sim_name"] = m_slice[["nosp", "name_word"]].max(axis=1).astype(np.float32)
+        m_slice["sim_addr"] = m_slice[["addr", "addr_word"]].max(axis=1).astype(np.float32)
+        m_slice["score"] = (m_slice[["sim_name", "sim_addr"]].max(axis=1) + 0.5 * m_slice[["sim_name", "sim_addr"]].min(axis=1)).astype(np.float32)
+        m_slice = m_slice.sort_values(["q", "score"], ascending=[True, False]).reset_index(drop=True)
+        m_slice["best"] = m_slice.groupby("q")["score"].transform("first").astype(np.float32)
+        m_slice["rank"] = m_slice.groupby("q").cumcount().astype(np.int16)
+        second = m_slice.loc[m_slice["rank"] == 1].set_index("q")["score"].astype(np.float32)
+        m_slice["gap"] = (m_slice["best"] - m_slice["q"].map(second).fillna(0.0)).astype(np.float32)
+
+        slice_res = pd.DataFrame({
+            "s1": s1_ids[m_slice["s"].to_numpy()],
+            "cand": q_ids[m_slice["q"].to_numpy()],
+            "sim_name": m_slice["sim_name"].to_numpy(np.float32),
+            "sim_addr": m_slice["sim_addr"].to_numpy(np.float32),
+            "sim_name_word": m_slice["name_word"].to_numpy(np.float32),
+            "sim_addr_word": m_slice["addr_word"].to_numpy(np.float32),
+            "score": m_slice["score"].to_numpy(np.float32),
+            "best": m_slice["best"].to_numpy(np.float32),
+            "rank": m_slice["rank"].to_numpy(np.int16),
+            "gap": m_slice["gap"].to_numpy(np.float32)
+        })
+        merged_slices.append(slice_res)
+        del m_slice, slice_parts
+
+    del parts
+    import gc
+    gc.collect()
+    res = pd.concat(merged_slices, ignore_index=True)
+    del merged_slices
+    gc.collect()
+
+    if f is not None:
+        res.to_parquet(f, index=False)
     print(f"  block {c} [{tag}]: {len(q):,} queries vs {len(idx):,} S1 in {time.time()-t:.0f}s", flush=True)
     return res
 

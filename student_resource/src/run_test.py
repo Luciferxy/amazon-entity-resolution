@@ -65,6 +65,18 @@ def main():
         t_c = time.time()
         print(f"\n=================== Country: {ctry} ===================", flush=True)
 
+        pred_file = W / f"pred_{ctry}.json"
+        cand_file = W / f"cand_{ctry}.json"
+        if pred_file.exists() and cand_file.exists():
+            print(f"  [{ctry}] Found cached predictions on disk. Loading...", flush=True)
+            with open(pred_file) as fp: pred_c = json.load(fp)
+            with open(cand_file) as fc: cand_map = json.load(fc)
+            all_matches.update(pred_c)
+            all_candidates.update(cand_map)
+            n_matched = sum(len(v) for v in pred_c.values())
+            print(f"  [{ctry}] Cached Matches: {n_matched:,}", flush=True)
+            continue
+
         # Load ONLY this country's data directly from disk using pushdown filters!
         s1_c = load("test", 1, load_cols, country=ctry)
         pool_c = load_pool("test", load_cols, country=ctry)
@@ -80,7 +92,6 @@ def main():
         # Record candidates for candidate_pairs.tsv
         cand_map = c_c.groupby("s1")["cand"].agg(list).to_dict()
         all_candidates.update(cand_map)
-        del cand_map
 
         # 2. Vectorized Feature Extraction & LightGBM Prediction in memory-safe chunks
         g = c_c.groupby("s1")["score"]
@@ -124,7 +135,14 @@ def main():
         n_matched = sum(len(v) for v in pred_c.values())
         print(f"  [{ctry}] Finished in {time.time()-t_c:.1f}s | Matches: {n_matched:,}", flush=True)
 
-        del c_c, p_c, s1_c, pool_c
+        # Checkpoint country predictions to disk immediately
+        try:
+            with open(pred_file, "w") as fp: json.dump(pred_c, fp)
+            with open(cand_file, "w") as fc: json.dump(cand_map, fc)
+        except Exception as e:
+            print(f"  [Checkpoint Warning] Could not write cache for {ctry}: {e}", flush=True)
+
+        del c_c, p_c, s1_c, pool_c, cand_map
         gc.collect()
 
     # 5. Write submission files
