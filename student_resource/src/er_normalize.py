@@ -8,7 +8,8 @@ LEGAL_SET = set(LEGAL.values())
 ADDR = {"road":"rd","street":"st","avenue":"ave","av":"ave","drive":"dr","place":"pl","terrace":"ter",
         "boulevard":"blvd","bd":"blvd","lane":"ln","court":"ct","highway":"hwy","township":"twp",
         "apartment":"apt","suite":"ste","building":"bldg","floor":"fl","sector":"sec",
-        "near":"nr","opposite":"opp","north":"n","south":"s","east":"e","west":"w"}
+        "near":"nr","opposite":"opp","north":"n","south":"s","east":"e","west":"w",
+        "rue":"rue","chemin":"ch","allee":"all","ali":"all","impasse":"imp","impase":"imp","cours":"crs","quai":"qua"}
 STATE = {
  "us": {"alabama":"al","alaska":"ak","arizona":"az","arkansas":"ar","california":"ca","colorado":"co",
         "connecticut":"ct","delaware":"de","district of columbia":"dc","florida":"fl","georgia":"ga",
@@ -29,7 +30,11 @@ STATE = {
         "uttarakhand":"uk","uttaranchal":"uk","west bengal":"wb",
         "andaman and nicobar islands":"an","chandigarh":"ch",
         "dadra and nagar haveli and daman and diu":"dd","delhi":"dl","jammu and kashmir":"jk",
-        "ladakh":"la","lakshadweep":"ld","puducherry":"py","pondicherry":"py"}}
+        "ladakh":"la","lakshadweep":"ld","puducherry":"py","pondicherry":"py"},
+ "france": {"ile de france":"idf","auvergne rhone alpes":"ara","nouvelle aquitaine":"naq",
+        "occitanie":"occ","provence alpes cote d azur":"pac","hauts de france":"hdf",
+        "pays de la loire":"pdl","bretagne":"bre","grand est":"ges","normandie":"nor",
+        "bourgogne franche comte":"bfc","centre val de loire":"cvl","corse":"cor"}}
 STATE_RE = {c: re.compile(r"\b(" + "|".join(sorted(map(re.escape, d), key=len, reverse=True)) + r")\b")
             for c, d in STATE.items()}
 NULLS = {"null", "none", "nan", "na"}
@@ -42,7 +47,7 @@ PHON = [                                              # phonetic equivalences fo
     (re.compile(r"shri"), "sri"),                      # shri -> sri (श्री)
     (re.compile(r"ee"), "i"), (re.compile(r"oo"), "u"), # phonetic long vowels
     (re.compile(r"aa"), "a"),
-    (re.compile(r"(.)\1"), r"\1"),                     # doubled consonants: tt->t, ss->s
+    (re.compile(r"([a-z])\1"), r"\1"),                 # doubled consonants: tt->t, ss->s (preserve digits in zip codes!)
 ]
 
 def _phonetic(s):
