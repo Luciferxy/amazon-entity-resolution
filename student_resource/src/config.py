@@ -29,11 +29,14 @@ BLOCK_COLS = ["entity_id", "country", "nosp", "addr"]
 FEAT_COLS = ["business_name", "name_full", "core", "nums", "zips"]
 ALL_COLS = BLOCK_COLS + FEAT_COLS
 
-def load(split, i, cols):
+def load(split, i, cols, country=None):
+    if country is not None:
+        return pd.read_parquet(W / f"{split}_s{i}.parquet", columns=cols,
+                               filters=[("country", "==", country)], dtype_backend="pyarrow")
     return pd.read_parquet(W / f"{split}_s{i}.parquet", columns=cols, dtype_backend="pyarrow")
 
-def load_pool(split, cols):
-    return pd.concat([load(split, i, cols) for i in (2, 3)], ignore_index=True)
+def load_pool(split, cols, country=None):
+    return pd.concat([load(split, i, cols, country=country) for i in (2, 3)], ignore_index=True)
 
 def read_gt():
     return pd.read_csv(DATASET / "train/train_ground_truth.tsv", sep="\t",

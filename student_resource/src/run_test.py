@@ -35,14 +35,17 @@ def main():
             print("="*70 + "\n")
             return
 
+    # Load S1 entity ID ordering and country mapping lightly (2 columns only!)
+    s1_meta = load("test", 1, ["entity_id", "country"])
+    all_s1 = s1_meta["entity_id"].to_numpy(dtype=object).tolist()
+    ctry_arr = s1_meta["country"].to_numpy(dtype=object)
+    countries = list(pd.unique(ctry_arr))
+    del s1_meta
+    gc.collect()
+
     # Check Cross-Encoder mode
     ce_mode = os.environ.get("ER_CE_MODE", "cascade")
     load_cols = ALL_COLS + (["business_address"] if ce_mode in ("full", "cascade") else [])
-
-    s1 = load("test", 1, load_cols)
-    pool = load_pool("test", load_cols)
-    all_s1 = s1.entity_id.to_numpy(dtype=object).tolist()
-    print(f"loaded {time.time()-t0:.0f}s | S1 {len(s1):,} | pool {len(pool):,}", flush=True)
 
     # Initialize shared Cross-Encoder engine if needed
     ce_engine = None
@@ -53,9 +56,7 @@ def main():
         print(f"Initializing FastCrossEncoder ({model_path})...", flush=True)
         ce_engine = FastCrossEncoder(model_name=model_path)
 
-    # Get distinct countries
-    countries = list(pd.unique(pool["country"].to_numpy(dtype=object)))
-    print(f"\nProcessing countries sequentially: {countries}", flush=True)
+    print(f"\nProcessing countries sequentially: {countries} (Total S1 entities: {len(all_s1):,})", flush=True)
 
     all_matches = {}
     all_candidates = {}
@@ -63,11 +64,12 @@ def main():
     for ctry in countries:
         t_c = time.time()
         print(f"\n=================== Country: {ctry} ===================", flush=True)
-        s1_c = s1[s1["country"] == ctry].copy()
-        if len(s1_c) == 0:
-            s1_c = s1.copy()
-        pool_c = pool[pool["country"] == ctry].copy()
-        s1_c_ids = s1_c.entity_id.to_numpy(dtype=object).tolist()
+
+        # Load ONLY this country's data directly from disk using pushdown filters!
+        s1_c = load("test", 1, load_cols, country=ctry)
+        pool_c = load_pool("test", load_cols, country=ctry)
+        s1_c_ids = s1_c["entity_id"].to_numpy(dtype=object).tolist()
+        print(f"  [{ctry}] Loaded: S1 {len(s1_c):,} | Pool {len(pool_c):,}", flush=True)
 
         # 1. Blocking per country (reads from disk cache if exists)
         c_c = block_country(s1_c, pool_c, ctry, k=k_cand, cache="test_raw")
@@ -86,7 +88,7 @@ def main():
         c_c["score_vs_best_s1"] = (c_c["score"] - g.transform("max")).to_numpy(dtype=np.float32)
         c_c["is_s3"] = c_c["cand"].str.startswith("S3-").to_numpy(dtype=np.int8)
 
-        CHUNK_SIZE = 4_000_000
+        CHUNK_SIZE = 2_000_000
         n_chunks = (len(c_c) + CHUNK_SIZE - 1) // CHUNK_SIZE
         probs_list = []
         for ch_idx in range(n_chunks):
@@ -133,7 +135,6 @@ def main():
     write(OUT / "matching_results.tsv", "matched_entity_ids", all_matches, all_s1)
 
     n = np.array([len(all_matches.get(s, [])) for s in all_s1])
-    ctry_arr = s1.country.to_numpy(dtype=object)
     print(f"\nFinal Stats: avg matches {n.mean():.2f} | empty {np.mean(n == 0):.2%}")
     for A in pd.unique(ctry_arr):
         k = ctry_arr == A

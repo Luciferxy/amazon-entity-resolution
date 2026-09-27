@@ -66,4 +66,5 @@ def features(c, s1, pool, n_jobs=None, step=200_000):
         F["n_cands"] = g.transform("size").to_numpy()
         F["score_vs_best_s1"] = (c["score"] - g.transform("max")).to_numpy()
         F["is_s3"] = c["cand"].str.startswith("S3-").to_numpy().astype(np.int8)
+    _G.clear()
     return F
