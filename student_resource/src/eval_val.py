@@ -69,7 +69,7 @@ def main(n_val=5000):
         F_c = features(c_c, s1_c, pool_c)
         p_c = model.predict(F_c[feature_names])
 
-        ce_mode = os.environ.get("ER_CE_MODE", "cascade")
+        ce_mode = os.environ.get("ER_CE_MODE", "none")
         if ce_mode == "cascade":
             from hybrid_cross_encoder import cascade_rescore
             p_c = cascade_rescore(c_c, p_c, s1_c, pool_c, low_thr=0.40, high_thr=0.85, ce_weight=0.65)
@@ -78,7 +78,7 @@ def main(n_val=5000):
         all_preds.update(preds)
 
     # Compute Macro F0.5
-    f05 = macro_f05(all_preds, val_truth)
+    f05 = macro_f05({s: set(v) for s, v in all_preds.items()}, val_truth)
 
     # Precision & Recall metrics
     tps, fps, fns = 0, 0, 0

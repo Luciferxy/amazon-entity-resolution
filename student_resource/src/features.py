@@ -38,6 +38,11 @@ def _chunk(bounds):
     F["r_addr_missing"] = (~has(R, "addr")).astype(np.int8)
     F["r_nums_missing"] = (~rn).astype(np.int8)
     F["r_nonascii"] = np.fromiter((not x.isascii() for x in R["business_name"]), bool, n).astype(np.int8)
+    F["name_only_match"] = ((F["r_addr_missing"] == 1) & (F["n_jw"] >= 0.85)).astype(np.int8)
+    F["addr_only_match"] = ((F["r_nonascii"] == 1) & (F["a_tsr"] >= 80)).astype(np.int8)
+    F["both_high"] = ((F["n_tsr"] >= 80) & (F["a_tsr"] >= 80)).astype(np.int8)
+    F["exact_num_match"] = ((F["num_jac"] == 1.0) & (F["num_conflict"] == 0)).astype(np.int8)
+    F["exact_zip_match"] = ((F["zip_jac"] == 1.0) & (F["zip_conflict"] == 0)).astype(np.int8)
     return pd.DataFrame(F)
 
 def features(c, s1, pool, n_jobs=None, step=200_000):
