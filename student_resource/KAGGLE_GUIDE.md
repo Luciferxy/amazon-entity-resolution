@@ -49,33 +49,36 @@ The notebook's first cell clones the GitHub repository. For these local improvem
 #### Option B: In a Blank Notebook Cell
 Simply paste this in the first cell and run:
 ```python
-# 1. Clone repository
-!git clone https://github.com/Luciferxy/amazon-entity-resolution.git /kaggle/working/amazon-entity-resolution
+# 1. Clone or pull latest repository
+import os
+if not os.path.exists('/kaggle/working/amazon-entity-resolution'):
+    !git clone https://github.com/Luciferxy/amazon-entity-resolution.git /kaggle/working/amazon-entity-resolution
+else:
+    %cd /kaggle/working/amazon-entity-resolution
+    !git pull origin main
+
 %cd /kaggle/working/amazon-entity-resolution/student_resource
 
 # 2. Install dependencies
-!pip install -q pandas pyarrow numpy scipy scikit-learn lightgbm rapidfuzz anyascii sparse_dot_topn lightning
+!pip install -q pandas pyarrow numpy scipy scikit-learn lightgbm rapidfuzz anyascii sparse_dot_topn transformers
 
-# 3. Configure GPU & Run
-import os
-os.environ['ER_BACKEND'] = 'gpu'
+# 3. Configure GPU and Memory-Safe Environment
+import os, torch
+os.environ['ER_BACKEND'] = 'gpu' if torch.cuda.is_available() else 'cpu'
 os.environ['ER_GPU_MODE'] = 'svd'
-os.environ['ER_K'] = '8'
+os.environ['ER_K'] = '5'
+os.environ['ER_FEAT_JOBS'] = '1'       # Prevents memory spikes in Kaggle
+os.environ['ER_PREP_WORKERS'] = '2'    # Safe preprocessing memory
+os.environ['ER_CE_MODE'] = 'cascade'   # Cross-Encoder cascade on borderline pairs
 
-# 4. Preprocess, inspect candidate recall, and train
-!python src/prep.py train
-!python src/prep.py test
-!python src/eval_block.py
-!python src/train_lightning.py 300000
-
-# 5. Predict Test Set
+# 4. Run test inference (uses pre-trained model work/lgb.txt directly)
 !python src/run_test.py
 
-# 6. Copy outputs for 1-click download
+# 5. Copy outputs for 1-click download
 !cp output/matching_results.tsv /kaggle/working/matching_results.tsv
 !cp output/candidate_pairs.tsv /kaggle/working/candidate_pairs.tsv
 !zip -j /kaggle/working/submission_files.zip output/matching_results.tsv output/candidate_pairs.tsv
-print("Done! Check the 'Output' tab on the right panel to download your files.")
+print("\nSUCCESS! Check the 'Output' tab on the right panel to download matching_results.tsv and submission_files.zip.")
 ```
 
 ---
