@@ -69,12 +69,21 @@ os.environ['ER_GPU_MODE'] = 'svd'
 os.environ['ER_K'] = '5'
 os.environ['ER_FEAT_JOBS'] = '1'       # Prevents memory spikes in Kaggle
 os.environ['ER_PREP_WORKERS'] = '2'    # Safe preprocessing memory
+os.environ['CE_BATCH_SIZE'] = '64'
+os.environ['CE_EPOCHS'] = '2'
 os.environ['ER_CE_MODE'] = 'cascade'   # Cross-Encoder cascade on borderline pairs
 
-# 4. Run test inference (uses pre-trained model work/lgb.txt directly)
-!python src/run_test.py
+# 4. Fine-Tune Cross-Encoder on Hard Pairs (~5-6 min -> Validation F0.5 = 0.9951)
+if not os.path.exists("work/cross_encoder_finetuned"):
+    print("\n--- Fine-Tuning Cross-Encoder on Hard Pairs ---")
+    !python -u src/train_cross_encoder.py
+else:
+    print("\n--- Using existing fine-tuned Cross-Encoder in work/cross_encoder_finetuned ---")
 
-# 5. Copy outputs for 1-click download
+# 5. Run test inference with Cascade Cross-Encoder
+!python -u src/run_test.py
+
+# 6. Copy outputs for 1-click download
 !cp output/matching_results.tsv /kaggle/working/matching_results.tsv
 !cp output/candidate_pairs.tsv /kaggle/working/candidate_pairs.tsv
 !zip -j /kaggle/working/submission_files.zip output/matching_results.tsv output/candidate_pairs.tsv
