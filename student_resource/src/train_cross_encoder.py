@@ -34,7 +34,7 @@ from block import block, prune
 MODEL_NAME = os.environ.get("CE_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 OUT_DIR = W / "cross_encoder_finetuned"
 BATCH_SIZE = int(os.environ.get("CE_BATCH_SIZE", 64))
-EPOCHS = int(os.environ.get("CE_EPOCHS", 4))
+EPOCHS = int(os.environ.get("CE_EPOCHS", 2))
 LR = float(os.environ.get("CE_LR", 2e-5))
 MAX_LEN = 96
 
@@ -87,17 +87,19 @@ def mine_pairs(n_sample=80_000):
     tp_df = sp.copy()
     tp_df["label"] = 1.0
 
-    # Look for cached candidate parquet from train_lightning
-    cached_files = list(CACHE.glob("train*raw*.parquet"))
+    # Look for cached candidate parquet from train
+    cached_files = list(CACHE.glob("*train*.parquet"))
     if cached_files:
-        print(f"Loading candidate pairs from cache: {cached_files[0].name}", flush=True)
-        c = pd.read_parquet(cached_files[0])
+        print(f"Loading candidate pairs from cache: {[f.name for f in cached_files]}", flush=True)
+        c = pd.concat([pd.read_parquet(f) for f in cached_files], ignore_index=True)
+        c = c[c.s1.isin(sample_s1)].reset_index(drop=True)
     else:
         print("Generating candidate pairs via blocking...", flush=True)
+        s1_sub = s1[s1.entity_id.isin(sample_s1)].reset_index(drop=True)
         # Filter pool for fast blocking
         is_sp = pool.entity_id.isin(sp.cand)
         q_samp = pd.concat([pool[is_sp], pool[~is_sp].sample(min(100_000, (~is_sp).sum()), random_state=42)])
-        c = prune(block(s1, q_samp, k=K), margin=1.0, floor=0.0)
+        c = prune(block(s1_sub, q_samp, k=K), margin=1.0, floor=0.0)
 
     # Label candidates
     c = c.merge(pairs.assign(is_true=1), on=["s1", "cand"], how="left")

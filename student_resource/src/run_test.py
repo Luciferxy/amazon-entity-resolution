@@ -46,8 +46,10 @@ def main():
     del s1_meta
     gc.collect()
 
-    # Check Cross-Encoder mode (default 'none' unless fine-tuned model exists)
-    ce_mode = os.environ.get("ER_CE_MODE", "none")
+    # Check Cross-Encoder mode (auto-detects fine-tuned model if available)
+    ce_mode = os.environ.get("ER_CE_MODE")
+    if ce_mode is None or ce_mode == "auto":
+        ce_mode = "cascade" if (W / "cross_encoder_finetuned").exists() else "none"
     load_cols = ALL_COLS + (["business_address"] if ce_mode in ("full", "cascade") else [])
 
     # Initialize shared Cross-Encoder engine if needed
@@ -69,7 +71,8 @@ def main():
         t_c = time.time()
         print(f"\n=================== Country: {ctry} ===================", flush=True)
 
-        prob_file = W / f"prob_{ctry}.npy"
+        ce_suffix = f"_{ce_mode}" if ce_mode in ("cascade", "full") else ""
+        prob_file = W / f"prob_{ctry}{ce_suffix}.npy"
 
         # Load ONLY this country's data directly from disk using pushdown filters!
         s1_c = load("test", 1, load_cols, country=ctry)
