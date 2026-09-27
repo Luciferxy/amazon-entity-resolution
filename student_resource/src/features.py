@@ -1,6 +1,12 @@
 import os, multiprocessing as mp, numpy as np, pandas as pd
-from rapidfuzz import fuzz
-from rapidfuzz.distance import JaroWinkler
+try:
+    from rapidfuzz import fuzz
+    from rapidfuzz.distance import JaroWinkler
+except ImportError:
+    import subprocess, sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "rapidfuzz"])
+    from rapidfuzz import fuzz
+    from rapidfuzz.distance import JaroWinkler
 
 TXT = ["business_name", "name_full", "core", "nosp", "addr", "nums", "zips"]
 _G = {}

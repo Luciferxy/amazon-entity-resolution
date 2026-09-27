@@ -1,5 +1,10 @@
 import re
-from anyascii import anyascii
+try:
+    from anyascii import anyascii
+except ImportError:
+    import subprocess, sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "anyascii"])
+    from anyascii import anyascii
 
 LEGAL = {"inc":"inc","incorporated":"inc","corp":"corp","corporation":"corp","co":"co","company":"co",
          "llc":"llc","llp":"llp","ltd":"ltd","limited":"ltd","pvt":"pvt","private":"pvt","plc":"plc",
